@@ -549,7 +549,7 @@ export default function EcgFullPanel() {
         const mean = polarityCorrectedSignal.reduce((a, b) => a + b, 0) / polarityCorrectedSignal.length;
         const std = Math.sqrt(polarityCorrectedSignal.reduce((a, b) => a + (b - mean) ** 2, 0) / polarityCorrectedSignal.length);
 
-        if (std < 0.01) { // Minimum std in mV units
+        if (std < 0.001) { // Match training threshold
             return new Array(ecgWindow.length).fill(0);
         }
 
