@@ -376,46 +376,51 @@ export default function EcgFullPanel() {
     useEffect(() => {
         const timerInterval = setInterval(() => {
             if (startTime) {
-                const elapsed = Math.floor((Date.now() - startTime) / 1000); // Define elapsed here
+                const elapsed = Math.floor((Date.now() - startTime) / 1000);
                 const min = String(Math.floor(elapsed / 60)).padStart(2, "0");
                 const sec = String(elapsed % 60).padStart(2, "0");
                 setTimer(`${min}:${sec}`);
             }
 
-            // Fix: Use the improved peak detection
             if (connected) {
-                // Get peaks using the most reliable method
+                // BPM
                 const peaks = panTompkins.current.detectQRS(dataCh0.current);
-
-                // If Pan-Tompkins fails, use backup method
                 let finalPeaks = peaks;
                 if (peaks.length === 0) {
                     finalPeaks = bpmCalculator.current.detectPeaks(dataCh0.current);
                 }
-
-
                 const bpm = bpmCalculator.current.calculateBPMFromPeaks(finalPeaks);
-
                 if (typeof bpm === "number" && bpm >= 40 && bpm <= 200) {
                     const smoothedBPM = bpmCalculator.current.smoothBPM(bpm);
                     if (smoothedBPM >= 40 && smoothedBPM <= 200) {
-                        setBpmDisplay(Math.round(smoothedBPM) + " BPM");
+                        setBpmDisplay(prev => {
+                            const newVal = Math.round(smoothedBPM) + " BPM";
+                            return prev === newVal ? prev : newVal;
+                        });
                     } else {
-                        setBpmDisplay("-- BPM");
+                        setBpmDisplay(prev => prev === "-- BPM" ? prev : "-- BPM");
                     }
                 } else {
-                    setBpmDisplay("-- BPM");
+                    setBpmDisplay(prev => prev === "-- BPM" ? prev : "-- BPM");
                 }
-            }
 
-            // Always try to update HRV metrics when connected
-            if (connected) {
+                // HRV
                 const metrics = hrvCalculator.current.getAllMetrics();
-
                 if (metrics.sampleCount > 0) {
-                    setHrvMetrics(metrics);
-                    // Update this line to use the new method name
-                    setPhysioState(hrvCalculator.current.getPhysiologicalState());
+                    setHrvMetrics(prev => {
+                        if (!prev || JSON.stringify(prev) !== JSON.stringify(metrics)) {
+                            return metrics;
+                        }
+                        return prev;
+                    });
+                    // Physio state
+                    const newState = hrvCalculator.current.getPhysiologicalState();
+                    setPhysioState(prev => {
+                        if (!prev || JSON.stringify(prev) !== JSON.stringify(newState)) {
+                            return newState;
+                        }
+                        return prev;
+                    });
                 }
             }
         }, 1000);
@@ -505,76 +510,68 @@ export default function EcgFullPanel() {
 
     // adaptSignalForModel function with this enhanced version:
 
-    const adaptSignalForModel = (ecgWindow: number[]): number[] => {
-        // Step 1: Convert your normalized signal back to MIT-BIH-like scale
-        // Your signal: -1 to +1 → Convert to MIT-BIH: ~500-1500 range
-        const mitBihLikeSignal = ecgWindow.map(x => {
-            // Scale from [-1, +1] to MIT-BIH range [0, 2048] with 1024 baseline
-            return (x * 400) + 1024;  // Assumes typical ±400 unit variation
-        });
+    // Utility: Convert normalized value (-1 to +1) to millivolts (mV)
+    function normalizedToMillivolts(normValue: number): number {
+        const adcValue = normValue * 2048 + 2048;
+        return (adcValue * 3.1 * 1000) / (4096 * 1650);
+    }
 
-        // Step 2: Detect R-peak in the window
+    // --- Update adaptSignalForModel ---
+    const adaptSignalForModel = (ecgWindow: number[]): number[] => {
+        // Step 1: Convert normalized signal to mV
+        const mVSignal = ecgWindow.map(normalizedToMillivolts);
+
+        // Step 2: Detect R-peak in the window (centered)
         const centerIdx = Math.floor(ecgWindow.length / 2);
         const searchRange = 30;
 
         let maxIdx = centerIdx;
-        let maxValue = mitBihLikeSignal[centerIdx];
+        let maxValue = mVSignal[centerIdx];
 
         for (let i = Math.max(0, centerIdx - searchRange);
             i < Math.min(ecgWindow.length, centerIdx + searchRange);
             i++) {
-            if (Math.abs(mitBihLikeSignal[i] - 1024) > Math.abs(maxValue - 1024)) {
-                maxValue = mitBihLikeSignal[i];
+            if (Math.abs(mVSignal[i]) > Math.abs(maxValue)) {
+                maxValue = mVSignal[i];
                 maxIdx = i;
             }
         }
 
-        // Step 3: Apply MIT-BIH-style polarity correction
+        // Step 3: Polarity correction (R-peaks should be positive)
         let needsFlip = false;
+        if (maxValue < 0) needsFlip = true;
 
-        // In MIT-BIH, R-peaks are typically positive deflections above 1024
-        if (maxValue < 1024) {
-            needsFlip = true;
+        const polarityCorrectedSignal = needsFlip
+            ? mVSignal.map(x => -x)
+            : mVSignal;
 
-        }
-
-        const polarityCorrectedSignal = needsFlip ?
-            mitBihLikeSignal.map(x => 2048 - x) :  // Flip around 1024 baseline
-            mitBihLikeSignal;
-
-        // Step 4: Apply Z-score normalization (same as training)
+        // Step 4: Z-score normalization
         const mean = polarityCorrectedSignal.reduce((a, b) => a + b, 0) / polarityCorrectedSignal.length;
         const std = Math.sqrt(polarityCorrectedSignal.reduce((a, b) => a + (b - mean) ** 2, 0) / polarityCorrectedSignal.length);
 
-        if (std < 10) {  // Minimum std in MIT-BIH units
-
+        if (std < 0.01) { // Minimum std in mV units
             return new Array(ecgWindow.length).fill(0);
         }
 
         const normalizedSignal = polarityCorrectedSignal.map(x => (x - mean) / std);
 
-
-
         return normalizedSignal;
     };
 
-    // AnalyzeCurrent function with this updated version:
+    // --- Update analyzeCurrent signal quality check ---
     const analyzeCurrent = async () => {
-
         if (!ecgModel) {
-
             setModelPrediction({ prediction: "Analyzing", confidence: 0 });
             return;
         }
 
-        // Convert signal quality check to MIT-BIH-like scale
-        const mitBihLikeData = dataCh0.current.map(x => (x * 400) + 1024);
-        const maxAbs = Math.max(...mitBihLikeData.map(x => Math.abs(x - 1024)));
-        const variance = mitBihLikeData.reduce((sum, val) => sum + Math.pow(val - 1024, 2), 0) / mitBihLikeData.length;
+        // Convert signal to mV for quality check
+        const mVData = dataCh0.current.map(normalizedToMillivolts);
+        const maxAbs = Math.max(...mVData.map(Math.abs));
+        const variance = mVData.reduce((sum, val) => sum + Math.pow(val, 2), 0) / mVData.length;
 
-        // MIT-BIH-style quality thresholds
-        if (maxAbs < 50 || variance < 100) {  // 50 units ≈ 244 μV, reasonable for ECG
-
+        // Quality thresholds in mV (e.g., 0.05 mV = 50 μV)
+        if (maxAbs < 0.05 || variance < 0.001) {
             setModelPrediction({ prediction: "Poor Signal", confidence: 0 });
             return;
         }
@@ -733,15 +730,18 @@ export default function EcgFullPanel() {
         }
     };
 
+
     // Add this to keep PQRST labels moving with the wave
     useEffect(() => {
         if (!showPQRST) return;
 
         // Update the PQRST labels position when the data is refreshed
         const pqrstUpdateInterval = setInterval(() => {
-            if (pqrstPoints.current.length > 0 && showPQRST) {
-                setVisiblePQRST([...pqrstPoints.current]);
-            }
+            const newPoints = JSON.stringify(pqrstPoints.current);
+            setVisiblePQRST(prev => {
+              const prevStr = JSON.stringify(prev);
+              return prevStr === newPoints ? prev : [...pqrstPoints.current];
+            });
         }, 200); // Update at 5fps for smoother movement
 
         return () => clearInterval(pqrstUpdateInterval);
@@ -1029,15 +1029,15 @@ export default function EcgFullPanel() {
         <div className="relative w-full h-full bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 ">
             {/* Patient Info Modal (overlay, not in sidebar) */}
             {showPatientInfo && (
-                <SessionRecording
-                    connected={connected}
-                    onStartRecording={startRecording}
-                    onStopRecording={stopRecording}
-                    isRecording={isRecording}
-                    recordingTime={recordingTime}
-                    setShowPatientInfo={setShowPatientInfo}
-                />
-            )}
+    <SessionRecording
+        connected={connected}
+        onStartRecording={startRecording}
+        onStopRecording={stopRecording}
+        isRecording={isRecording}
+        recordingTime={recordingTime}
+        onClose={() => setShowPatientInfo(false)} // ✅ Use a stable callback
+    />
+)}
             {showSessionReport && sessionResults && (
                 <SessionReport
                     analysisResults={sessionResults}
@@ -1682,7 +1682,7 @@ export default function EcgFullPanel() {
                                 </div>
                             )}
                         </div>
-                    </div>
+                                                         </div>
                 </div>
             )}
 

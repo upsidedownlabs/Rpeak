@@ -36,7 +36,7 @@ export interface SessionRecordingProps {
   onStopRecording: () => RecordingSession | null;
   isRecording: boolean;
   recordingTime: string;
-  setShowPatientInfo: React.Dispatch<React.SetStateAction<boolean>>;
+  onClose: () => void; // <-- Add this line
 }
 
 interface SessionReportProps {
@@ -48,11 +48,14 @@ interface SessionReportProps {
   onSaveReport: () => void;
 }
 
-export default function SessionRecording({
+const SessionRecording: React.FC<SessionRecordingProps> = ({
+  connected,
   onStartRecording,
   onStopRecording,
-  setShowPatientInfo
-}: SessionRecordingProps) {
+  isRecording,
+  recordingTime,
+  onClose, // <-- Use this prop
+}) => {
   const [patientInfo, setPatientInfo] = useState<PatientInfo>({
     age: 30,
     gender: 'male',
@@ -122,10 +125,10 @@ export default function SessionRecording({
     setPatientInfo({ ...patientInfo, medications: newMeds });
   };
 
-  const handleStartRecording = () => {
-    onStartRecording(patientInfo);
-    setShowPatientInfo(false);
-  };
+ const handleStartRecording = () => {
+  onStartRecording(patientInfo);
+  onClose();
+};
 
 
   return (
@@ -242,7 +245,7 @@ export default function SessionRecording({
 
           <div className="flex justify-between">
             <button
-              onClick={() => setShowPatientInfo(false)}
+              onClick={onClose} // <-- use onClose instead of setShowPatientInfo(false)
               className="px-4 py-2 rounded-lg border border-gray-700 text-gray-300 hover:bg-gray-800"
             >
               Cancel
@@ -260,3 +263,5 @@ export default function SessionRecording({
     </>
   );
 }
+
+export default SessionRecording;
