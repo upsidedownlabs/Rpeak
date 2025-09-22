@@ -154,7 +154,7 @@ src/
 │   ├── pqrstDetector.ts      # Wave component detection
 │   ├── hrvAnalysis.ts        # HRV calculations
 │   ├── ecgIntervals.ts       # Clinical interval measurement
-│   └── aiModel.ts            # Neural network training
+│   └── Modeltrainer.ts            # Neural network training
 └── public/
     └── data                # ECG datasets for AI training
 ```
