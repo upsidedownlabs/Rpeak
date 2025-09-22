@@ -14,12 +14,11 @@ export default function DocsPage() {
             <h2 className="text-2xl font-bold text-white mb-4">Getting Started</h2>
             <ol className="list-decimal list-inside text-gray-300 space-y-4 mb-4">
               <li>
-                <span className="font-semibold text-blue-400">Connect Your ECG Device</span>
+                <span className="font-semibold text-blue-400">Connect Your Npg Lite Device</span>
                 <ul className="list-disc list-inside ml-6 mt-2 text-gray-400">
                   <li>Click the <span className="font-semibold text-purple-400">🔵 Bluetooth</span> button in the left sidebar</li>
                   <li>Your browser will show available Bluetooth devices</li>
-                  <li>Select your ECG device from the list</li>
-                  <li>Wait for "Connected" status to appear</li>
+                  <li>Select your Npg Lite device from the list</li>
                 </ul>
               </li>
               
@@ -29,7 +28,6 @@ export default function DocsPage() {
                   <li>Once connected, ECG data will automatically start flowing</li>
                   <li>You'll see a real-time waveform on your screen</li>
                   <li>Heart rate will be calculated and displayed</li>
-                  <li>The timer shows how long you've been monitoring</li>
                 </ul>
               </li>
               
@@ -48,15 +46,6 @@ export default function DocsPage() {
             <h2 className="text-2xl font-bold text-white mb-4">Analysis Tools</h2>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="p-4 bg-purple-500/10 border border-purple-500/30 rounded-lg">
-                <h3 className="text-lg font-medium text-purple-400 mb-2">📈 Peaks</h3>
-                <p className="text-gray-300 text-sm mb-2">
-                  Shows R peaks labeled on your ECG where heartbeats are detected.
-                </p>
-                <p className="text-gray-400 text-xs">
-                  Useful for: Verifying that the system is correctly detecting your heartbeats.
-                </p>
-              </div>
               
               <div className="p-4 bg-green-500/10 border border-green-500/30 rounded-lg">
                 <h3 className="text-lg font-medium text-green-400 mb-2">🫀 PQRST</h3>
@@ -93,9 +82,7 @@ export default function DocsPage() {
                 <p className="text-gray-300 text-sm mb-2">
                   it's in development phase and may not be fully accurate. Uses machine learning to classify heartbeats.
                 </p>
-                <p className="text-gray-400 text-xs">
-                  Note: Requires training a model first on the <Link href="/train" className="text-blue-400 hover:underline">Training Page</Link>.
-                </p>
+               
               </div>
               
               <div className="p-4 bg-orange-500/10 border border-orange-500/30 rounded-lg">
@@ -103,9 +90,7 @@ export default function DocsPage() {
                 <p className="text-gray-300 text-sm mb-2">
                   Records your ECG data for later analysis and generates detailed reports.
                 </p>
-                <p className="text-gray-400 text-xs">
-                  Useful for: Keeping records, tracking progress, and sharing with healthcare providers.
-                </p>
+               
               </div>
             </div>
           </div>
@@ -211,33 +196,6 @@ export default function DocsPage() {
                   <li>Take regular breaks from monitoring</li>
                 </ul>
               </div>
-            </div>
-          </div>
-
-          <div className="bg-black/40 backdrop-blur-sm border border-white/20 rounded-xl p-6 mb-8">
-            <h2 className="text-2xl font-bold text-white mb-4">Session Recording</h2>
-            <p className="text-gray-300 mb-4">
-              Recording sessions allows you to save and analyze your ECG data:
-            </p>
-            
-            <ol className="list-decimal list-inside text-gray-300 space-y-2 mb-4">
-              <li>Click <span className="text-orange-400">📊 Session</span> to open the recording panel</li>
-              <li>Click "Start Recording" to begin capturing data</li>
-              <li>Monitor for your desired duration (recommended: 5-10 minutes)</li>
-              <li>Click "Stop Recording" to end the session</li>
-              <li>View the automatically generated analysis report</li>
-              <li>Export data if needed for sharing with healthcare providers</li>
-            </ol>
-            
-            <div className="p-3 bg-green-500/10 border border-green-500/30 rounded-lg">
-              <h4 className="text-sm font-medium text-green-400">Session Reports Include:</h4>
-              <ul className="text-gray-300 text-sm mt-1 list-disc list-inside">
-                <li>Complete HRV analysis with trends over time</li>
-                <li>Heart rate statistics and variability</li>
-                <li>Detected arrhythmic events (if any)</li>
-                <li>Signal quality assessment</li>
-                <li>Exportable data for further analysis</li>
-              </ul>
             </div>
           </div>
           
