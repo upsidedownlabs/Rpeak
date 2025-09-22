@@ -309,10 +309,15 @@ export default function EcgFullPanel() {
 
             hrvCalculator.current.extractRRFromPeaks(peaks, SAMPLE_RATE);
 
-            // Force update HRV metrics
+            // Only update HRV metrics if changed
             const metrics = hrvCalculator.current.getAllMetrics();
-
-            setHrvMetrics(metrics);
+            setHrvMetrics(prev => {
+                // Simple shallow compare (customize as needed)
+                if (!prev || JSON.stringify(prev) !== JSON.stringify(metrics)) {
+                    return metrics;
+                }
+                return prev;
+            });
         }
 
         // Calculate ECG intervals when PQRST points are available
@@ -360,12 +365,11 @@ export default function EcgFullPanel() {
         }
     }
 
-    // Add an effect to clear visible points when toggling off
+    // Remove the interval-based updater for visiblePQRST
+    // Only clear visiblePQRST when hiding PQRST
     useEffect(() => {
         if (!showPQRST) {
             setVisiblePQRST([]);
-        } else if (pqrstPoints.current.length > 0) {
-            setVisiblePQRST([...pqrstPoints.current]);
         }
     }, [showPQRST]);
 
