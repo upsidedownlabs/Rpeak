@@ -136,10 +136,11 @@ export class PQRSTDetector {
             });
 
             // ---------- T WAVE DETECTION ----------
-            // Smaller window for T wave detection  
+            // Start T search at least 15% of RR interval after S wave
+            const tStartOffset = Math.floor(rrInterval * 0.15); // ~54 samples at 360Hz if RR=360
             const tWindowSize = Math.min(Math.floor(rrInterval * 0.25), 54); // Max 54 samples
-            const tWindowStart = sIndex + Math.floor(rrInterval * 0.01); // Small gap after S
-            const tWindowEnd = Math.min(data.length - 1, sIndex + tWindowSize);
+            const tWindowStart = sIndex + tStartOffset;
+            const tWindowEnd = Math.min(data.length - 1, tWindowStart + tWindowSize);
 
             let tIndex = tWindowStart;
             let tValue = data[tWindowStart];
