@@ -1092,29 +1092,6 @@ export default function EcgFullPanel() {
                         </div>
                     </div>
 
-                    {/* Peaks Button */}
-                    <div className="relative w-full mb-5">
-                        <div className="flex">
-                            <div className="w-16 flex justify-center">
-                                <button
-                                    onClick={() => setPeaksVisible(!peaksVisible)}
-                                    className={`w-10 h-10 flex items-center justify-center rounded-full transition-all ${peaksVisible
-                                        ? 'bg-green-500/20 text-green-400 border border-green-500/30 hover:bg-green-500/30'
-                                        : 'bg-gray-500/20 text-gray-400 border border-gray-500/30 hover:bg-gray-500/30'
-                                        }`}
-                                    title={peaksVisible ? 'Hide Peaks' : 'Show Peaks'}
-                                >
-                                    {peaksVisible ? <Eye className="w-5 h-5" /> : <EyeOff className="w-5 h-5" />}
-                                </button>
-                            </div>
-                            <div className="whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center">
-                                <span className={`text-sm font-medium ${peaksVisible ? 'text-green-400' : 'text-gray-400'}`}>
-                                    {peaksVisible ? 'Hide Peaks' : 'Show Peaks'}
-                                </span>
-                            </div>
-                        </div>
-                    </div>
-
                     {/* PQRST Button */}
                     <div className="relative w-full mb-5">
                         <div className="flex">
