@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+/* Theme variables */
+:root {
+  --primary: #ff3838;
+  --primary-dark: #e02c39;
+  --secondary: #0f172a;
+  --text: #f1f5f9;
+  --background: #020617;
+  --panel-bg: #1e293b;
+  --graph-bg: #000000;
+  --overlay-bg: rgba(15, 23, 42, 0.85);
+  --success: #2ed573;
+  --button-shadow: 0 2px 5px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme="light"] {
+  --primary: #ff3838;
+  --primary-dark: #e02c39;
+  --secondary: #e2e8f0;
+  --text: #0f172a;
+  --background: #ffffff;
+  --panel-bg: #e9ecef;
+  --graph-bg: #ffffff;
+  --overlay-bg: rgba(255, 255, 255, 0.85);
+}
+
+/* Add these rules to your existing CSS */
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+}
+
+/* For components that need scrollable content */
+.scrollable-content {
+  height: 100%;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+/* Custom scrollbar styling */
+.scrollable-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.scrollable-content::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
+}
+
+.scrollable-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+}
+
+.scrollable-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* Paste the rest of your <style> content here (canvas-container, overlays, buttons, etc.) */
