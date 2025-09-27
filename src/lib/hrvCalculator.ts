@@ -269,7 +269,7 @@ export class HRVCalculator {
     const metrics = this.getAllMetrics();
     
     // Default state if we don't have enough data
-    if (metrics.sampleCount < 30) {
+    if (metrics.sampleCount < 10) {
       return { state: "Analyzing", confidence: 0 };
     }
     

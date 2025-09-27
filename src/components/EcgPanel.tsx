@@ -1,12 +1,11 @@
 "use client";
 import React, { useEffect, useRef, useState } from "react";
-import { Bluetooth, Eye, EyeOff, Activity, Zap, TrendingUp, Play, Square, Clock } from "lucide-react";
+import { Bluetooth, Activity, Zap, TrendingUp, Play, Square, Clock } from "lucide-react";
 import { WebglPlot, WebglLine, ColorRGBA } from "webgl-plot";
-import { BPMCalculator, filterQRS } from '../lib/bpmCalculator';
+import { BPMCalculator } from '../lib/bpmCalculator';
 import { HighpassFilter, NotchFilter, LowpassFilter } from "../lib/filters";
 import { HRVCalculator } from '../lib/hrvCalculator';
 import { PQRSTDetector, PQRSTPoint } from '../lib/pqrstDetector';
-import { PanTompkinsDetector } from '../lib/panTompkinsDetector';
 import { ECGIntervalCalculator, ECGIntervals } from '../lib/ecgIntervals';
 import * as tf from "@tensorflow/tfjs";
 import SessionRecording, { PatientInfo, RecordingSession } from './SessionRecording';
@@ -113,7 +112,6 @@ export default function EcgFullPanel() {
 
     const wglpRef = useRef<WebglPlot | null>(null);
     const lineRef = useRef<WebglLine | null>(null);
-    const peakLineRef = useRef<WebglLine | null>(null);
     const dataCh0 = useRef(new Array(NUM_POINTS).fill(0));
     const peakData = useRef(new Array(NUM_POINTS).fill(0));
     const sampleIndex = useRef(0);
@@ -129,20 +127,11 @@ export default function EcgFullPanel() {
     const rLineRef = useRef<WebglLine | null>(null);
     const sLineRef = useRef<WebglLine | null>(null);
     const tLineRef = useRef<WebglLine | null>(null);
-    const panTompkins = useRef(new PanTompkinsDetector(SAMPLE_RATE));
     const intervalCalculator = useRef(new ECGIntervalCalculator(SAMPLE_RATE));
     // Add this state to store currently visible PQRST points
     const [visiblePQRST, setVisiblePQRST] = useState<PQRSTPoint[]>([]);
     // Add this state inside your component
     const [stSegmentData, setSTSegmentData] = useState<STSegmentData | null>(null);
-
-    // Add to EcgFullPanel component
-    const [beatPredictions, setBeatPredictions] = useState<{ prediction: string, confidence: number }[]>([]);
-    const [beatBuffer, setBeatBuffer] = useState<{ prediction: string, confidence: number }[]>([]);
-    const [batchResult, setBatchResult] = useState<{
-        summary: ReturnType<typeof getRollingSummary> | null,
-        latest: { prediction: string, confidence: number } | null
-    } | null>(null);
 
 
     // Add this type definition with your other types
@@ -229,25 +218,6 @@ export default function EcgFullPanel() {
         return maxAbs > 0.9 ? 0.9 / maxAbs : 1;
     }
 
-    // Add this function to see what data we have
-    function getRollingSummary(buffer?: { prediction: string, confidence: number }[]) {
-        const arr = buffer ?? beatBuffer;
-        if (arr.length === 0) return null;
-        const counts: Record<string, number> = {};
-        arr.forEach(bp => {
-            counts[bp.prediction] = (counts[bp.prediction] || 0) + 1;
-        });
-        const total = arr.length;
-        const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-        const majorityClass = sorted[0][0];
-        const majorityPercent = (sorted[0][1] / total) * 100;
-        return {
-            majorityClass,
-            majorityPercent,
-            counts,
-            total
-        };
-    }
     function exportModelInputBufferToCSV() {
         // Flatten all windows into a single array
         const flatArray = modelInputBuffer.current.flat();
@@ -284,7 +254,6 @@ export default function EcgFullPanel() {
 
         const pqrstPointsArr = pqrstDetector.current.detectDirectWaves(dataCh0.current);
         const peaks = pqrstPointsArr.filter(p => p.type === 'R').map(p => p.index);
-        console.log('peaks from PQRST:', peaks);
 
         // Fall back to original algorithm if Pan-Tompkins doesn't find peaks
         let usedPanTompkins = peaks.length > 0;
@@ -297,10 +266,8 @@ export default function EcgFullPanel() {
             }
         }
 
-
         // Generate visualization (same as before)
         peakData.current = bpmCalculator.current.generatePeakVisualization(dataCh0.current, peaks);
-
 
         // Try to detect PQRST waves
         let pqrstDetected = false;
@@ -327,20 +294,17 @@ export default function EcgFullPanel() {
             }
         }
 
-        // Extract RR intervals for HRV analysis
         if (peaks.length >= 2) {
-
             hrvCalculator.current.extractRRFromPeaks(peaks, SAMPLE_RATE);
-
-            // Only update HRV metrics if changed
             const metrics = hrvCalculator.current.getAllMetrics();
             setHrvMetrics(prev => {
-                // Simple shallow compare (customize as needed)
                 if (!prev || JSON.stringify(prev) !== JSON.stringify(metrics)) {
                     return metrics;
                 }
                 return prev;
             });
+        } else {
+            setHrvMetrics(null);
         }
 
         // Calculate ECG intervals when PQRST points are available
@@ -387,8 +351,16 @@ export default function EcgFullPanel() {
             setEcgIntervals(null);
         }
     }
+    useEffect(() => {
+        if (hrvMetrics && hrvMetrics.sampleCount >= 10) {
+            const stateObj = hrvCalculator.current.getPhysiologicalState();
+            setPhysioState(stateObj);
+        } else {
+            setPhysioState({ state: "Analyzing", confidence: 0 });
+        }
+    }, [hrvMetrics]);
 
-    // Remove the interval-based updater for visiblePQRST
+
     // Only clear visiblePQRST when hiding PQRST
     useEffect(() => {
         if (!showPQRST) {
@@ -512,7 +484,6 @@ export default function EcgFullPanel() {
             setStartTime(Date.now());
             bpmCalculator.current.reset();
             hrvCalculator.current.reset();
-            panTompkins.current.reset(); // Reset Pan-Tompkins detector
             intervalCalculator.current.reset(); // Reset interval calculator
 
         } catch (e) {
@@ -588,13 +559,16 @@ export default function EcgFullPanel() {
             return;
         }
 
-        // Use the same peak detection pipeline as your main application
-        const detectedPeaks = panTompkins.current.detectQRS(dataCh0.current);
 
-        // If Pan-Tompkins fails, use backup method
+        // Use PQRSTDetector for peak detection
+        const pqrstPointsArr = pqrstDetector.current.detectDirectWaves(dataCh0.current);
+        const detectedPeaks = pqrstPointsArr.filter(p => p.type === 'R').map(p => p.index);
+
+        // If PQRST fails, use backup method
         const recentPeaks = detectedPeaks.length > 0
             ? detectedPeaks
             : bpmCalculator.current.detectPeaks(dataCh0.current);
+
 
         // Filter peaks to ensure physiological plausibility
         const filteredPeaks = recentPeaks.filter((peak, index) => {
@@ -721,26 +695,6 @@ export default function EcgFullPanel() {
                 confidence: confidence
             });
 
-            // RAISED confidence floor for rolling analysis as you suggested
-            if (confidence >= 60) {  // REDUCED from 70 to 60
-                setBeatPredictions(prev => {
-                    const updated = [...prev, { prediction: predictedClass, confidence }];
-                    const rolling = updated.slice(-BATCH_SIZE);
-
-                    if (rolling.length > 0) {
-                        const summary = getRollingSummary(rolling);
-                        setBatchResult({
-                            summary,
-                            latest: rolling[rolling.length - 1]
-                        });
-
-                    }
-                    return rolling;
-                });
-            } else {
-
-            }
-
             inputTensor.dispose();
             outputTensor.dispose();
         } catch (err) {
@@ -749,7 +703,6 @@ export default function EcgFullPanel() {
             inputTensor.dispose();
         }
     };
-
 
     // Add this to keep PQRST labels moving with the wave
     useEffect(() => {
@@ -791,43 +744,6 @@ export default function EcgFullPanel() {
         return () => clearInterval(signalQualityInterval);
     }, [connected]);
 
-    // Add this before the return statement in your EcgFullPanel component
-    const renderAbnormalityWarnings = (intervals: ECGIntervals) => {
-        const warnings = [];
-
-        // QRS wide: check AI prediction for R/L
-        if (intervals.status.qrs === 'wide') {
-            if (modelPrediction?.prediction === "R") {
-                warnings.push({ text: 'Right bundle branch block (RBBB)', color: 'text-red-400' });
-            } else if (modelPrediction?.prediction === "L") {
-                warnings.push({ text: 'Left bundle branch block (LBBB)', color: 'text-red-400' });
-            } else {
-                warnings.push({ text: 'Possible bundle branch block', color: 'text-red-400' });
-            }
-        }
-
-        if (intervals.status.pr === 'long')
-            warnings.push({ text: 'Possible 1st degree AV block', color: 'text-red-400' });
-
-        if (intervals.status.qtc === 'prolonged')
-            warnings.push({ text: 'QT prolongation - arrhythmia risk', color: 'text-red-400' });
-
-        if (warnings.length === 0) return null;
-
-        return (
-            <div className="mt-4 p-3 rounded-lg border border-red-500/30 bg-red-500/10">
-                <h4 className="text-sm font-medium text-red-400 mb-2">Potential Findings:</h4>
-                <ul className="space-y-1 text-sm">
-                    {warnings.map((warning, i) => (
-                        <li key={i} className={`flex items-center gap-2 ${warning.color}`}>
-                            <span>•</span>
-                            <span>{warning.text}</span>
-                        </li>
-                    ))}
-                </ul>
-            </div>
-        );
-    };
 
     // Add this function inside your EcgFullPanel component
     const analyzeSTSegment = (pqrstPoints: PQRSTPoint[]): STSegmentData | null => {
@@ -946,7 +862,11 @@ export default function EcgFullPanel() {
         const endTime = Date.now();
         const duration = (endTime - recordingStartTime) / 1000;
 
-        const freshRPeaks = panTompkins.current.detectQRS(recordedData);
+
+        const pqrstPointsArr = pqrstDetector.current.detectDirectWaves(dataCh0.current);
+        const freshRPeaks = pqrstPointsArr.filter(p => p.type === 'R').map(p => p.index);
+
+
         const freshPQRST = pqrstDetector.current.detectWaves(recordedData, freshRPeaks, 0);
 
         const freshIntervals = intervalCalculator.current.calculateIntervals(freshPQRST);
@@ -1221,7 +1141,7 @@ export default function EcgFullPanel() {
                                     <button
                                         onClick={stopRecording}
                                         className="w-10 h-10 flex items-center justify-center rounded-full transition-all shadow-md
-            bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30"
+                                     bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30"
                                         title="Stop Recording"
                                     >
                                         <Square className="w-5 h-5" />
@@ -1572,7 +1492,7 @@ export default function EcgFullPanel() {
                                                 }`}>
                                                 {
                                                     ecgIntervals?.bpm > 0
-                                                        ? ecgIntervals.bpm.toFixed(1)
+                                                        ? ecgIntervals.bpm.toFixed(0)
                                                         : (() => {
                                                             // Use your actual R-peak indices array here
                                                             const rPeaks = pqrstPoints.current.filter(p => p.type === "R").map(p => p.index);
@@ -1631,8 +1551,6 @@ export default function EcgFullPanel() {
                                             </div>
                                         </div>
 
-
-
                                         {/* QRS Duration with explanation */}
                                         <div className="p-3 rounded-lg border border-white/20 bg-black/40">
                                             <div className="flex justify-between items-center">
@@ -1668,8 +1586,6 @@ export default function EcgFullPanel() {
                                             </div>
                                         )}
                                     </div>
-
-
 
                                     {/* Abnormality indicators - full width */}
                                     {ecgIntervals.status.pr === 'long' || ecgIntervals.status.qrs === 'wide' || ecgIntervals.status.qtc === 'prolonged' ? (
