@@ -47,6 +47,8 @@ export default function EcgFullPanel() {
     const [showSessionReport, setShowSessionReport] = useState(false);
     const sessionAnalyzer = useRef(new SessionAnalyzer(SAMPLE_RATE));
     const [rPeakBuffer, setRPeakBuffer] = useState<number[]>([]);
+    const [bpmBuffer, setBpmBuffer] = useState<number[]>([]);
+    const BPM_AVG_WINDOW = 5; // Number of BPM values to average
     // Update this state for physiological state
     const [physioState, setPhysioState] = useState<{ state: string; confidence: number }>({
         state: "Analyzing",
@@ -369,21 +371,33 @@ export default function EcgFullPanel() {
     }, [showPQRST]);
 
     useEffect(() => {
-        if (rPeakBuffer.length === 10) {
-            // Calculate RR intervals (in ms)
-            const rrIntervals = [];
-            for (let i = 1; i < rPeakBuffer.length; i++) {
-                rrIntervals.push((rPeakBuffer[i] - rPeakBuffer[i - 1]) / SAMPLE_RATE * 1000);
-            }
-            // Average RR interval
-            const avgRR = rrIntervals.reduce((a, b) => a + b, 0) / rrIntervals.length;
-            // Calculate BPM
-            const bpm = avgRR > 0 ? 60000 / avgRR : 0;
-            setBpmDisplay(bpm >= 40 && bpm <= 200 ? `${bpm.toFixed(1)} BPM` : "-- BPM");
-        } else {
-            setBpmDisplay("-- BPM");
+    if (rPeakBuffer.length === 10) {
+        const rrIntervals = [];
+        for (let i = 1; i < rPeakBuffer.length; i++) {
+            rrIntervals.push((rPeakBuffer[i] - rPeakBuffer[i - 1]) / SAMPLE_RATE * 1000);
         }
-    }, [rPeakBuffer]);
+        const avgRR = rrIntervals.reduce((a, b) => a + b, 0) / rrIntervals.length;
+        const bpm = avgRR > 0 ? 60000 / avgRR : 0;
+
+        // Update BPM buffer
+        setBpmBuffer(prev => {
+            const updated = [...prev, bpm >= 40 && bpm <= 200 ? bpm : 0];
+            return updated.length > BPM_AVG_WINDOW ? updated.slice(-BPM_AVG_WINDOW) : updated;
+        });
+    }
+}, [rPeakBuffer]);
+
+useEffect(() => {
+    if (bpmBuffer.length === BPM_AVG_WINDOW) {
+        const validBpms = bpmBuffer.filter(b => b > 0);
+        const avgBpm = validBpms.length > 0
+            ? validBpms.reduce((a, b) => a + b, 0) / validBpms.length
+            : 0;
+        setBpmDisplay(avgBpm >= 40 && avgBpm <= 200 ? `${avgBpm.toFixed(0)} BPM` : "-- BPM");
+    } else {
+        setBpmDisplay("-- BPM");
+    }
+}, [bpmBuffer]);
 
     useEffect(() => {
         const timerInterval = setInterval(() => {
