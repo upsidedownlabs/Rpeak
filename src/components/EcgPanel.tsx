@@ -47,7 +47,7 @@ export default function EcgFullPanel() {
     const [sessionResults, setSessionResults] = useState<SessionAnalysisResults | null>(null);
     const [showSessionReport, setShowSessionReport] = useState(false);
     const sessionAnalyzer = useRef(new SessionAnalyzer(SAMPLE_RATE));
-
+    const [rPeakBuffer, setRPeakBuffer] = useState<number[]>([]);
     // Update this state for physiological state
     const [physioState, setPhysioState] = useState<{ state: string; confidence: number }>({
         state: "Analyzing",
@@ -282,8 +282,9 @@ export default function EcgFullPanel() {
             return;
         }
 
-        // Use Pan-Tompkins algorithm for peak detection
-        const peaks = panTompkins.current.detectQRS(dataCh0.current);
+        const pqrstPointsArr = pqrstDetector.current.detectDirectWaves(dataCh0.current);
+        const peaks = pqrstPointsArr.filter(p => p.type === 'R').map(p => p.index);
+        console.log('peaks from PQRST:', peaks);
 
         // Fall back to original algorithm if Pan-Tompkins doesn't find peaks
         let usedPanTompkins = peaks.length > 0;
@@ -396,6 +397,23 @@ export default function EcgFullPanel() {
     }, [showPQRST]);
 
     useEffect(() => {
+        if (rPeakBuffer.length === 10) {
+            // Calculate RR intervals (in ms)
+            const rrIntervals = [];
+            for (let i = 1; i < rPeakBuffer.length; i++) {
+                rrIntervals.push((rPeakBuffer[i] - rPeakBuffer[i - 1]) / SAMPLE_RATE * 1000);
+            }
+            // Average RR interval
+            const avgRR = rrIntervals.reduce((a, b) => a + b, 0) / rrIntervals.length;
+            // Calculate BPM
+            const bpm = avgRR > 0 ? 60000 / avgRR : 0;
+            setBpmDisplay(bpm >= 40 && bpm <= 200 ? `${bpm.toFixed(1)} BPM` : "-- BPM");
+        } else {
+            setBpmDisplay("-- BPM");
+        }
+    }, [rPeakBuffer]);
+
+    useEffect(() => {
         const timerInterval = setInterval(() => {
             if (startTime) {
                 const elapsed = Math.floor((Date.now() - startTime) / 1000);
@@ -405,45 +423,17 @@ export default function EcgFullPanel() {
             }
 
             if (connected) {
-                // BPM
-                const peaks = panTompkins.current.detectQRS(dataCh0.current);
-                let finalPeaks = peaks;
-                if (peaks.length === 0) {
-                    finalPeaks = bpmCalculator.current.detectPeaks(dataCh0.current);
-                }
-                const bpm = bpmCalculator.current.calculateBPMFromPeaks(finalPeaks);
-                if (typeof bpm === "number" && bpm >= 40 && bpm <= 200) {
-                    const smoothedBPM = bpmCalculator.current.smoothBPM(bpm);
-                    if (smoothedBPM >= 40 && smoothedBPM <= 200) {
-                        setBpmDisplay(prev => {
-                            const newVal = Math.round(smoothedBPM) + " BPM";
-                            return prev === newVal ? prev : newVal;
-                        });
-                    } else {
-                        setBpmDisplay(prev => prev === "-- BPM" ? prev : "-- BPM");
-                    }
-                } else {
-                    setBpmDisplay(prev => prev === "-- BPM" ? prev : "-- BPM");
-                }
+                // Detect R-peaks
+                const pqrstPointsArr = pqrstDetector.current.detectDirectWaves(dataCh0.current);
+                const detectedPeaks = pqrstPointsArr.filter(p => p.type === 'R').map(p => p.index);
 
-                // HRV
-                const metrics = hrvCalculator.current.getAllMetrics();
-                if (metrics.sampleCount > 0) {
-                    setHrvMetrics(prev => {
-                        if (!prev || JSON.stringify(prev) !== JSON.stringify(metrics)) {
-                            return metrics;
-                        }
-                        return prev;
-                    });
-                    // Physio state
-                    const newState = hrvCalculator.current.getPhysiologicalState();
-                    setPhysioState(prev => {
-                        if (!prev || JSON.stringify(prev) !== JSON.stringify(newState)) {
-                            return newState;
-                        }
-                        return prev;
-                    });
-                }
+                // Update moving buffer (strictly 10 peaks)
+                setRPeakBuffer(prev => {
+                    let newBuffer = [...prev, ...detectedPeaks.filter(idx => !prev.includes(idx))];
+                    // Keep only the last 10 peaks
+                    if (newBuffer.length > 10) newBuffer = newBuffer.slice(-10);
+                    return newBuffer;
+                });
             }
         }, 1000);
         return () => clearInterval(timerInterval);
