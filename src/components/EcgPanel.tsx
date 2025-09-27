@@ -53,6 +53,11 @@ export default function EcgFullPanel() {
         state: "Analyzing",
         confidence: 0
     });
+    // Add at the top of your component (after hooks)
+    const MODEL_WINDOW_LENGTH = 135;
+
+    const THREE_MINUTES_WINDOWS = Math.floor((3 * 60 * SAMPLE_RATE) / MODEL_WINDOW_LENGTH); // ≈ 480 windows
+    const modelInputBuffer = useRef<number[][]>([]);
 
     type HRVMetrics = {
         sampleCount: number;
@@ -242,6 +247,23 @@ export default function EcgFullPanel() {
             counts,
             total
         };
+    }
+    function exportModelInputBufferToCSV() {
+        // Flatten all windows into a single array
+        const flatArray = modelInputBuffer.current.flat();
+        let csvContent = "Index,ECG_Data\n";
+        flatArray.forEach((val, idx) => {
+            csvContent += `${idx + 1},${val.toFixed(6)}\n`;
+        });
+        const blob = new Blob([csvContent], { type: "text/csv" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `ecg_model_input_last3min_${new Date().toISOString().replace(/:/g, "-")}.csv`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
     }
 
     function updatePeaks() {
@@ -616,6 +638,8 @@ export default function EcgFullPanel() {
         // CRITICAL: Adapt signal to match training data characteristics
         const adaptedSignal = adaptSignalForModel(ecgWindow);
 
+
+
         // Now apply z-score normalization to adapted signal
         const windowMean = adaptedSignal.reduce((a, b) => a + b, 0) / adaptedSignal.length;
         const windowStd = Math.sqrt(adaptedSignal.reduce((a, b) => a + (b - windowMean) ** 2, 0) / adaptedSignal.length);
@@ -640,6 +664,12 @@ export default function EcgFullPanel() {
 
             setModelPrediction({ prediction: "Normalization Failed", confidence: 0 });
             return;
+        }
+
+        // Buffer the window (keep only last 3 min)
+        modelInputBuffer.current.push([...normWindow]);
+        if (modelInputBuffer.current.length > THREE_MINUTES_WINDOWS) {
+            modelInputBuffer.current = modelInputBuffer.current.slice(-THREE_MINUTES_WINDOWS);
         }
 
         // Create input tensor with correct shape [1, 135, 1]
@@ -739,8 +769,8 @@ export default function EcgFullPanel() {
         const pqrstUpdateInterval = setInterval(() => {
             const newPoints = JSON.stringify(pqrstPoints.current);
             setVisiblePQRST(prev => {
-              const prevStr = JSON.stringify(prev);
-              return prevStr === newPoints ? prev : [...pqrstPoints.current];
+                const prevStr = JSON.stringify(prev);
+                return prevStr === newPoints ? prev : [...pqrstPoints.current];
             });
         }, 200); // Update at 5fps for smoother movement
 
@@ -866,7 +896,7 @@ export default function EcgFullPanel() {
         // Set up auto-refresh every 1 minute (60,000 ms)
         const interval = setInterval(() => {
             analyzeCurrent();
-        }, 60000); // 1 minute refresh
+        }, 3000); // 3 second refresh
 
         return () => {
             clearInterval(interval);
@@ -1029,15 +1059,15 @@ export default function EcgFullPanel() {
         <div className="relative w-full h-full bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 ">
             {/* Patient Info Modal (overlay, not in sidebar) */}
             {showPatientInfo && (
-    <SessionRecording
-        connected={connected}
-        onStartRecording={startRecording}
-        onStopRecording={stopRecording}
-        isRecording={isRecording}
-        recordingTime={recordingTime}
-        onClose={() => setShowPatientInfo(false)} // ✅ Use a stable callback
-    />
-)}
+                <SessionRecording
+                    connected={connected}
+                    onStartRecording={startRecording}
+                    onStopRecording={stopRecording}
+                    isRecording={isRecording}
+                    recordingTime={recordingTime}
+                    onClose={() => setShowPatientInfo(false)} // ✅ Use a stable callback
+                />
+            )}
             {showSessionReport && sessionResults && (
                 <SessionReport
                     analysisResults={sessionResults}
@@ -1095,6 +1125,13 @@ export default function EcgFullPanel() {
                             </div>
                         </div>
                     </div>
+
+                    <button
+                        onClick={exportModelInputBufferToCSV}
+                        className="mt-2 px-4 py-2 bg-blue-600 text-white rounded"
+                    >
+                        Export Last 3 min Model Input (CSV)
+                    </button>
 
                     {/* PQRST Button */}
                     <div className="relative w-full mb-5">
@@ -1182,7 +1219,7 @@ export default function EcgFullPanel() {
                                         }}
                                         disabled={!connected}
                                         className={`w-10 h-10 flex items-center justify-center rounded-full transition-all shadow-md
-            ${connected
+                                        ${connected
                                                 ? 'bg-green-500/20 text-green-400 border border-green-500/30 hover:bg-green-500/30'
                                                 : 'bg-gray-500/20 text-gray-400 border border-gray-700 cursor-not-allowed'
                                             }`}
@@ -1414,7 +1451,7 @@ export default function EcgFullPanel() {
                         <div className="flex items-center justify-between text-sm">
                             <span className="text-blue-400">Analysis Status:</span>
                             <span className={`font-semibold ${modelLoaded && connected ? 'text-green-400' : 'text-yellow-400'}`}>
-                                {modelLoaded && connected ? '🟢 Active (1 min refresh)' :
+                                {modelLoaded && connected ? '🟢 Active (3 sec refresh)' :
                                     modelLoaded ? '🟡 Ready (connect device)' : '🔴 Loading model...'}
                             </span>
                         </div>
@@ -1682,7 +1719,7 @@ export default function EcgFullPanel() {
                                 </div>
                             )}
                         </div>
-                                                         </div>
+                    </div>
                 </div>
             )}
 

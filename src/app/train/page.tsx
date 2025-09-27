@@ -18,7 +18,6 @@ export default function TrainPage() {
     checkModelExists().then(setModelExists);
   }, []);
 
-  // Scroll to bottom of logs when logs update
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
@@ -35,7 +34,10 @@ export default function TrainPage() {
       appendLog("🚀 Starting training with updated 360Hz AAMI-5 model...");
       appendLog(`📊 Using ${allFilePairs.length} MIT-BIH records for comprehensive training`);
       appendLog("🔧 Model Configuration: 135 samples @ 360Hz (375ms beat windows)");
-      
+      appendLog("🔬 Architecture: 4-layer 1D CNN (kernel sizes 7/7/5/3), batch norm, dropout, GAP, 2 dense layers, softmax output");
+      appendLog("⚖️ Balanced dataset across all 5 AAMI classes, Z-score normalized beats");
+      appendLog("🧪 70/15/15% train/val/test split, Adam optimizer, 10 epochs");
+
       await trainBeatLevelECGModelAllFiles(
         // onEpoch callback
         (epoch, logsObj) => {
@@ -84,13 +86,15 @@ export default function TrainPage() {
                 
                 {/* Updated Model Specifications */}
                 <div className="mb-2 text-xs text-blue-300 bg-blue-500/10 border border-blue-500/20 rounded-lg p-2">
-                  <h4 className="font-bold text-blue-200 mb-1">Model Specifications (Updated):</h4>
+                  <h4 className="font-bold text-blue-200 mb-1">Model Specifications (2025):</h4>
                   <p>• <b>Sampling Rate:</b> {samplingRate} Hz (native 360Hz - no resampling)</p>
                   <p>• <b>Beat Window:</b> {beatLength} samples ({beatDurationMs}ms duration)</p>
                   <p>• <b>Input Shape:</b> [{beatLength}, 1] tensor for CNN processing</p>
-                  <p>• <b>AAMI Classes:</b> {classLabels.join(', ')}</p>
-                  <p>• <b>Architecture:</b> 4-layer CNN + GAP + 2 dense layers</p>
+                  <p>• <b>Architecture:</b> 4-layer 1D CNN (kernel sizes 7/7/5/3), batch norm, dropout, GAP, 2 dense layers, softmax output</p>
+                  <p>• <b>Regularization:</b> BatchNorm, Dropout (0.2-0.5), L2</p>
+                  <p>• <b>Optimizer:</b> Adam (lr=0.001), categorical crossentropy</p>
                   <p>• <b>Training Data:</b> {allFilePairs.length} MIT-BIH patient records</p>
+                  <p>• <b>AAMI Classes:</b> {classLabels.join(', ')}</p>
                 </div>
 
                 {/* Model Status */}
@@ -112,6 +116,7 @@ export default function TrainPage() {
                   <p>• 70/15/15% train/validation/test data split</p>
                   <p>• Adaptive learning rate with batch normalization</p>
                   <p>• Model saved locally in browser IndexedDB storage</p>
+                  <p>• Per-class metrics: Precision, Recall, F1-score (see logs)</p>
                 </div>
 
                 {/* Beat Classification Mapping */}
@@ -171,6 +176,7 @@ export default function TrainPage() {
                     log.includes('📈') || log.includes('Epoch') ? 'text-blue-300' :
                     log.includes('🚀') || log.includes('🔧') ? 'text-purple-300' :
                     log.includes('📊') || log.includes('📁') ? 'text-cyan-300' :
+                    log.includes('Precision=') ? 'text-orange-300' :
                     'text-gray-200'
                   }>{log}</div>
                 ))}
@@ -186,8 +192,8 @@ export default function TrainPage() {
                   <li>Map beat annotations to AAMI 5-class standard</li>
                   <li>Apply Z-score normalization for training stability</li>
                   <li>Balance dataset across all 5 AAMI arrhythmia classes</li>
-                  <li>Train optimized CNN model for 10 epochs with validation</li>
-                  <li>Evaluate performance with class-specific metrics</li>
+                  <li>Train optimized 1D CNN model for 10 epochs with validation</li>
+                  <li>Evaluate performance with class-specific metrics (Precision, Recall, F1)</li>
                   <li>Save trained model to browser IndexedDB storage</li>
                 </ol>
                 

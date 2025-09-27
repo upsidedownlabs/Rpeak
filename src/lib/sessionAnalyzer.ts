@@ -13,6 +13,7 @@ export type SessionAnalysisResults = {
         rPeaks?: number[];
         heartRate: {
             average: number;
+            median?: number;
             min: number;
             max: number;
             status: string;
@@ -187,7 +188,9 @@ export class SessionAnalyzer {
         this.intervalCalculator.setGender(patientInfo.gender);
 
         // 1. Detect R-peaks
-        const peaks = this.panTompkins.detectQRS(ecgData);
+        const rPoints = this.pqrstDetector.detectDirectWaves(ecgData).filter(pt => pt.type === 'R');
+const peaks = rPoints.map(pt => pt.index);
+console.log("Detected R-peaks (PQRST):", peaks);
 
         // 2. Detect PQRST waves
         const pqrstPoints = this.pqrstDetector.detectWaves(ecgData, peaks, 0);
@@ -331,56 +334,38 @@ export class SessionAnalyzer {
         };
     }
 
-    private adaptSignalForModel(ecgWindow: number[]): number[] {
-        // Step 1: Convert your normalized signal back to MIT-BIH-like scale
-        // Your signal: -1 to +1 → Convert to MIT-BIH: ~500-1500 range
-        const mitBihLikeSignal = ecgWindow.map(x => {
-            // Scale from [-1, +1] to MIT-BIH range [0, 2048] with 1024 baseline
-            return (x * 400) + 1024;  // Assumes typical ±400 unit variation
-        });
+   private adaptSignalForModel(ecgWindow: number[]): number[] {
+    // Step 1: Use raw normalized signal (no mV conversion, no MIT-BIH scaling)
+    const rawSignal = ecgWindow;
 
-        // Step 2: Detect R-peak in the window
-        const centerIdx = Math.floor(ecgWindow.length / 2);
-        const searchRange = 30;
-
-        let maxIdx = centerIdx;
-        let maxValue = mitBihLikeSignal[centerIdx];
-
-        for (let i = Math.max(0, centerIdx - searchRange);
-             i < Math.min(ecgWindow.length, centerIdx + searchRange);
-             i++) {
-            if (Math.abs(mitBihLikeSignal[i] - 1024) > Math.abs(maxValue - 1024)) {
-                maxValue = mitBihLikeSignal[i];
-                maxIdx = i;
-            }
+    // Step 2: Polarity correction (R-peak should be positive)
+    const centerIdx = Math.floor(rawSignal.length / 2);
+    const searchRange = 30;
+    let maxIdx = centerIdx;
+    let maxValue = rawSignal[centerIdx];
+    for (let i = Math.max(0, centerIdx - searchRange); i < Math.min(rawSignal.length, centerIdx + searchRange); i++) {
+        if (Math.abs(rawSignal[i]) > Math.abs(maxValue)) {
+            maxValue = rawSignal[i];
+            maxIdx = i;
         }
-
-        // Step 3: Apply MIT-BIH-style polarity correction
-        let needsFlip = false;
-        
-        // In MIT-BIH, R-peaks are typically positive deflections above 1024
-        if (maxValue < 1024) {
-            needsFlip = true;
-           }
-
-        const polarityCorrectedSignal = needsFlip ?
-            mitBihLikeSignal.map(x => 2048 - x) :  // Flip around 1024 baseline
-            mitBihLikeSignal;
-
-        // Step 4: Apply Z-score normalization (same as training)
-        const mean = polarityCorrectedSignal.reduce((a, b) => a + b, 0) / polarityCorrectedSignal.length;
-        const std = Math.sqrt(polarityCorrectedSignal.reduce((a, b) => a + (b - mean) ** 2, 0) / polarityCorrectedSignal.length);
-
-        if (std < 10) {  // Minimum std in MIT-BIH units
-           
-            return new Array(ecgWindow.length).fill(0);
-        }
-
-        const normalizedSignal = polarityCorrectedSignal.map(x => (x - mean) / std);
-
-
-        return normalizedSignal;
     }
+    const needsFlip = maxValue < 0;
+    const polarityCorrectedSignal = needsFlip
+        ? rawSignal.map(x => -x)
+        : rawSignal;
+
+    // Step 3: Z-score normalization (mean=0, std=1)
+    const mean = polarityCorrectedSignal.reduce((a, b) => a + b, 0) / polarityCorrectedSignal.length;
+    const std = Math.sqrt(polarityCorrectedSignal.reduce((a, b) => a + (b - mean) ** 2, 0) / polarityCorrectedSignal.length);
+
+    if (std < 0.005) { // Minimum std for normalized data
+        return new Array(ecgWindow.length).fill(0);
+    }
+
+    const normalizedSignal = polarityCorrectedSignal.map(x => (x - mean) / std);
+
+    return normalizedSignal;
+}
 
     private async runBeatLevelClassification(
         ecgData: number[],
@@ -803,10 +788,11 @@ export class SessionAnalyzer {
         average: number;
         min: number;
         max: number;
+        median: number;
     } {
         if (!peaks || peaks.length < 2) {
             console.warn("No valid R-peaks detected.");
-            return { average: 0, min: 0, max: 0 };
+            return { average: 0, min: 0, max: 0, median: 0 };
         }
 
         const rrIntervals = [];
@@ -819,20 +805,24 @@ export class SessionAnalyzer {
         const filteredRRs = rrIntervals.filter(rr => rr >= 300 && rr <= 2000);
 
         if (filteredRRs.length === 0) {
-           
-            return { average: 0, min: 0, max: 0 };
+            return { average: 0, min: 0, max: 0, median: 0 };
         }
 
-        const instantHRs = filteredRRs.map(rr => 60000 / rr);
+        // Calculate BPM for each RR interval
+        const bpms = filteredRRs.map(rr => 60000 / rr);
 
-        const average = instantHRs.reduce((sum, hr) => sum + hr, 0) / instantHRs.length;
-        const min = Math.min(...instantHRs);
-        const max = Math.max(...instantHRs);
+        // Mean, median, min, max BPM
+        const average = bpms.reduce((a, b) => a + b, 0) / bpms.length;
+        const sortedBPM = bpms.slice().sort((a, b) => a - b);
+        const median = sortedBPM[Math.floor(sortedBPM.length / 2)];
+        const min = Math.min(...bpms);
+        const max = Math.max(...bpms);
 
         return {
             average: isNaN(average) ? 0 : average,
             min: isNaN(min) ? 0 : min,
-            max: isNaN(max) ? 0 : max
+            max: isNaN(max) ? 0 : max,
+            median: isNaN(median) ? 0 : median
         };
     }
 
