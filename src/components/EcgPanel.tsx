@@ -54,11 +54,6 @@ export default function EcgFullPanel() {
         state: "Analyzing",
         confidence: 0
     });
-    // Add at the top of your component (after hooks)
-    const MODEL_WINDOW_LENGTH = 135;
-
-    const THREE_MINUTES_WINDOWS = Math.floor((3 * 60 * SAMPLE_RATE) / MODEL_WINDOW_LENGTH); // ≈ 480 windows
-    const modelInputBuffer = useRef<number[][]>([]);
 
     type HRVMetrics = {
         sampleCount: number;
@@ -218,24 +213,6 @@ export default function EcgFullPanel() {
     function getScaleFactor() {
         const maxAbs = Math.max(...dataCh0.current.map(Math.abs), 0.1);
         return maxAbs > 0.9 ? 0.9 / maxAbs : 1;
-    }
-
-    function exportModelInputBufferToCSV() {
-        // Flatten all windows into a single array
-        const flatArray = modelInputBuffer.current.flat();
-        let csvContent = "Index,ECG_Data\n";
-        flatArray.forEach((val, idx) => {
-            csvContent += `${idx + 1},${val.toFixed(6)}\n`;
-        });
-        const blob = new Blob([csvContent], { type: "text/csv" });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = `ecg_model_input_last3min_${new Date().toISOString().replace(/:/g, "-")}.csv`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
     }
 
     function updatePeaks() {
@@ -644,11 +621,6 @@ useEffect(() => {
             return;
         }
 
-        // Buffer the window (keep only last 3 min)
-        modelInputBuffer.current.push([...normWindow]);
-        if (modelInputBuffer.current.length > THREE_MINUTES_WINDOWS) {
-            modelInputBuffer.current = modelInputBuffer.current.slice(-THREE_MINUTES_WINDOWS);
-        }
 
         // Create input tensor with correct shape [1, 135, 1]
         const inputTensor = tf.tensor3d([normWindow.map((v: number) => [v])], [1, MODEL_INPUT_LENGTH, 1]);
@@ -718,21 +690,21 @@ useEffect(() => {
         }
     };
 
-    // Add this to keep PQRST labels moving with the wave
     useEffect(() => {
-        if (!showPQRST) return;
+    if (!showPQRST) return;
 
-        // Update the PQRST labels position when the data is refreshed
-        const pqrstUpdateInterval = setInterval(() => {
-            const newPoints = JSON.stringify(pqrstPoints.current);
-            setVisiblePQRST(prev => {
-                const prevStr = JSON.stringify(prev);
-                return prevStr === newPoints ? prev : [...pqrstPoints.current];
-            });
-        }, 200); // Update at 5fps for smoother movement
+    let lastPointsStr = JSON.stringify(pqrstPoints.current);
 
-        return () => clearInterval(pqrstUpdateInterval);
-    }, [showPQRST]);
+    const pqrstUpdateInterval = setInterval(() => {
+        const newPointsStr = JSON.stringify(pqrstPoints.current);
+        if (lastPointsStr !== newPointsStr) {
+            setVisiblePQRST([...pqrstPoints.current]);
+            lastPointsStr = newPointsStr;
+        }
+    }, 200);
+
+    return () => clearInterval(pqrstUpdateInterval);
+}, [showPQRST]);
 
     // Add this effect to update signal quality
     useEffect(() => {
@@ -1049,13 +1021,6 @@ useEffect(() => {
                             </div>
                         </div>
                     </div>
-
-                    <button
-                        onClick={exportModelInputBufferToCSV}
-                        className="mt-2 px-4 py-2 bg-blue-600 text-white rounded"
-                    >
-                        Export Last 3 min Model Input (CSV)
-                    </button>
 
                     {/* PQRST Button */}
                     <div className="relative w-full mb-5">

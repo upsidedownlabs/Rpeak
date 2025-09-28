@@ -500,4 +500,3 @@ export async function trainBeatLevelECGModelAllFiles(
   predictions.dispose();
   return model;
 }
-

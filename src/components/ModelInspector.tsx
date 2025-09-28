@@ -74,7 +74,12 @@ export default function ModelInspector() {
             config,
             weightShapes,
             units: config.units,
-            activation: config.activation
+            activation: config.activation,
+            filters: config.filters,
+            kernelSize: config.kernelSize,
+            regularizer: config.kernelRegularizer,
+            poolSize: config.poolSize,
+            rate: config.rate
           };
         });
 
@@ -230,6 +235,7 @@ export default function ModelInspector() {
             <div className="mb-4 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
               <h3 className="text-blue-400 font-medium mb-2">Model Summary</h3>
               <div className="text-sm text-white">
+                <p><b>Architecture:</b> 4-layer 1D CNN (Conv1D + BatchNorm + MaxPool + Dropout), GlobalAvgPool, Dense layers, L2 regularization</p>
                 <p>Total Layers: {modelInfo.totalLayers}</p>
                 <p>Input Shape: [{modelInfo.inputShape.slice(1).join(', ')}]</p>
                 <p>Output Shape: [{modelInfo.outputShape.slice(1).join(', ')}]</p>
@@ -245,11 +251,26 @@ export default function ModelInspector() {
                   <span className="text-gray-400 text-sm">{layer.type}</span>
                 </div>
                 <div className="mt-2 text-sm">
+                  {layer.filters !== undefined && (
+                    <p className="text-gray-300">Filters: {layer.filters}</p>
+                  )}
+                  {layer.kernelSize !== undefined && (
+                    <p className="text-gray-300">Kernel Size: {Array.isArray(layer.kernelSize) ? layer.kernelSize.join(',') : layer.kernelSize}</p>
+                  )}
+                  {layer.poolSize !== undefined && (
+                    <p className="text-gray-300">Pool Size: {layer.poolSize}</p>
+                  )}
                   {layer.units !== undefined && (
                     <p className="text-gray-300">Units: {layer.units}</p>
                   )}
                   {layer.activation && (
                     <p className="text-gray-300">Activation: {layer.activation}</p>
+                  )}
+                  {layer.rate !== undefined && (
+                    <p className="text-gray-300">Dropout Rate: {layer.rate}</p>
+                  )}
+                  {layer.regularizer && (
+                    <p className="text-gray-300">Regularizer: L2</p>
                   )}
                   <p className="text-gray-300">
                     Weight Shapes: {layer.weightShapes.map((shape: number[]) =>
