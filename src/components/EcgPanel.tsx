@@ -48,7 +48,7 @@ export default function EcgFullPanel() {
     const sessionAnalyzer = useRef(new SessionAnalyzer(SAMPLE_RATE));
     const [rPeakBuffer, setRPeakBuffer] = useState<number[]>([]);
     const [bpmBuffer, setBpmBuffer] = useState<number[]>([]);
-    const BPM_AVG_WINDOW = 5; // Number of BPM values to average
+    const BPM_AVG_WINDOW = 8; // Number of BPM values to average
     // Update this state for physiological state
     const [physioState, setPhysioState] = useState<{ state: string; confidence: number }>({
         state: "Analyzing",
@@ -348,33 +348,39 @@ export default function EcgFullPanel() {
     }, [showPQRST]);
 
     useEffect(() => {
-    if (rPeakBuffer.length === 10) {
-        const rrIntervals = [];
-        for (let i = 1; i < rPeakBuffer.length; i++) {
-            rrIntervals.push((rPeakBuffer[i] - rPeakBuffer[i - 1]) / SAMPLE_RATE * 1000);
+        if (rPeakBuffer.length >= BPM_AVG_WINDOW) {
+            // Calculate RR intervals (ms)
+            const rrIntervals = [];
+            for (let i = 1; i < rPeakBuffer.length; i++) {
+                const rr = (rPeakBuffer[i] - rPeakBuffer[i - 1]) / SAMPLE_RATE * 1000;
+                // Only include physiologically plausible intervals
+                if (rr >= 300 && rr <= 1500) rrIntervals.push(rr);
+            }
+            // Calculate BPMs from RR intervals
+            const bpms = rrIntervals.map(rr => 60000 / rr);
+            // Filter out outlier BPMs
+            const validBpms = bpms.filter(bpm => bpm >= 40 && bpm <= 200);
+            // Calculate moving average BPM
+            const avgBpm = validBpms.length > 0
+                ? validBpms.reduce((a, b) => a + b, 0) / validBpms.length
+                : 0;
+            setBpmDisplay(avgBpm > 0 ? `${avgBpm.toFixed(0)} BPM` : "-- BPM");
+        } else {
+            setBpmDisplay("-- BPM");
         }
-        const avgRR = rrIntervals.reduce((a, b) => a + b, 0) / rrIntervals.length;
-        const bpm = avgRR > 0 ? 60000 / avgRR : 0;
+    }, [rPeakBuffer]);
 
-        // Update BPM buffer
-        setBpmBuffer(prev => {
-            const updated = [...prev, bpm >= 40 && bpm <= 200 ? bpm : 0];
-            return updated.length > BPM_AVG_WINDOW ? updated.slice(-BPM_AVG_WINDOW) : updated;
-        });
-    }
-}, [rPeakBuffer]);
-
-useEffect(() => {
-    if (bpmBuffer.length === BPM_AVG_WINDOW) {
-        const validBpms = bpmBuffer.filter(b => b > 0);
-        const avgBpm = validBpms.length > 0
-            ? validBpms.reduce((a, b) => a + b, 0) / validBpms.length
-            : 0;
-        setBpmDisplay(avgBpm >= 40 && avgBpm <= 200 ? `${avgBpm.toFixed(0)} BPM` : "-- BPM");
-    } else {
-        setBpmDisplay("-- BPM");
-    }
-}, [bpmBuffer]);
+    useEffect(() => {
+        if (bpmBuffer.length === BPM_AVG_WINDOW) {
+            const validBpms = bpmBuffer.filter(b => b > 0);
+            const avgBpm = validBpms.length > 0
+                ? validBpms.reduce((a, b) => a + b, 0) / validBpms.length
+                : 0;
+            setBpmDisplay(avgBpm >= 40 && avgBpm <= 200 ? `${avgBpm.toFixed(0)} BPM` : "-- BPM");
+        } else {
+            setBpmDisplay("-- BPM");
+        }
+    }, [bpmBuffer]);
 
     useEffect(() => {
         const timerInterval = setInterval(() => {
@@ -691,20 +697,20 @@ useEffect(() => {
     };
 
     useEffect(() => {
-    if (!showPQRST) return;
+        if (!showPQRST) return;
 
-    let lastPointsStr = JSON.stringify(pqrstPoints.current);
+        let lastPointsStr = JSON.stringify(pqrstPoints.current);
 
-    const pqrstUpdateInterval = setInterval(() => {
-        const newPointsStr = JSON.stringify(pqrstPoints.current);
-        if (lastPointsStr !== newPointsStr) {
-            setVisiblePQRST([...pqrstPoints.current]);
-            lastPointsStr = newPointsStr;
-        }
-    }, 200);
+        const pqrstUpdateInterval = setInterval(() => {
+            const newPointsStr = JSON.stringify(pqrstPoints.current);
+            if (lastPointsStr !== newPointsStr) {
+                setVisiblePQRST([...pqrstPoints.current]);
+                lastPointsStr = newPointsStr;
+            }
+        }, 200);
 
-    return () => clearInterval(pqrstUpdateInterval);
-}, [showPQRST]);
+        return () => clearInterval(pqrstUpdateInterval);
+    }, [showPQRST]);
 
     // Add this effect to update signal quality
     useEffect(() => {

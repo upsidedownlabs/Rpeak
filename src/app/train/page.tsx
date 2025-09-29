@@ -75,7 +75,7 @@ export default function TrainPage() {
               <h2 className="text-lg font-bold text-white mb-2">ECG Beat Classification Model Training</h2>
               <div className="mb-2 flex-1 overflow-y-auto">
                 <p className="text-white mb-2 text-sm">
-                  Train a deep learning model for ECG heartbeat classification using the AAMI 5-class standard and optimized 360Hz sampling for real-time arrhythmia detection.
+                  Train a deep learning model for ECG heartbeat classification using the AAMI 5-class standard and optimized 360Hz sampling.
                 </p>
                 <div className="mb-2 text-xs text-blue-300 bg-blue-500/10 border border-blue-500/20 rounded-lg p-2">
                   <h4 className="font-bold text-blue-200 mb-1">Model Specifications:</h4>
@@ -83,11 +83,9 @@ export default function TrainPage() {
                   <p>• <b>Beat Window:</b> {beatLength} samples ({beatDurationMs}ms)</p>
                   <p>• <b>Input Shape:</b> [{beatLength}, 1] tensor for CNN</p>
                   <p>• <b>Architecture:</b> 4-layer 1D CNN, batch norm, dropout, global pooling, dense layers, softmax output</p>
-                  <p>• <b>Regularization:</b> BatchNorm, Dropout, L2</p>
                   <p>• <b>Optimizer:</b> Adam (lr=0.001)</p>
                   <p>• <b>Training Data:</b> {allFilePairs.length} MIT-BIH records</p>
                   <p>• <b>AAMI Classes:</b> {classLabels.join(', ')}</p>
-                  <p>• <b>Augmentation:</b> Noise, baseline shift, amplitude scaling for device robustness</p>
                 </div>
                 {modelExists && (
                   <div className="p-2 bg-green-500/10 border border-green-500/30 rounded-lg mb-2">
@@ -102,11 +100,7 @@ export default function TrainPage() {
                   <p>• ~100,000+ labeled heartbeat examples</p>
                   <p>• Balanced dataset with equal AAMI class representation</p>
                   <p>• Z-score normalized 375ms beat windows</p>
-                  <p>• Augmented beats for device generalization</p>
                   <p>• 70/15/15% train/validation/test split</p>
-                  <p>• Adaptive learning rate with batch normalization</p>
-                  <p>• Model saved locally in browser IndexedDB storage</p>
-                  <p>• Per-class metrics: Precision, Recall, F1-score (see logs)</p>
                 </div>
                 <div className="space-y-1 text-xs text-gray-300 mb-2 bg-purple-500/10 border border-purple-500/20 rounded-lg p-2">
                   <h4 className="font-bold text-purple-200 mb-1">AAMI Beat Classification:</h4>
@@ -178,7 +172,6 @@ export default function TrainPage() {
                   <li>Balance dataset across all 5 AAMI arrhythmia classes</li>
                   <li>Train deep CNN model for 10 epochs with validation</li>
                   <li>Evaluate performance with class-specific metrics (Precision, Recall, F1)</li>
-                  <li>Save trained model to browser IndexedDB storage</li>
                 </ol>
                 <div className="mt-2 p-2 bg-gray-800/30 border border-gray-700/50 rounded text-xs">
                   <p className="text-gray-400">

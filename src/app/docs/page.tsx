@@ -16,7 +16,7 @@ export default function DocsPage() {
               <li>
                 <span className="font-semibold text-blue-400">Connect Your Npg Lite Device</span>
                 <ul className="list-disc list-inside ml-6 mt-2 text-gray-400">
-                  <li>Click the <span className="font-semibold text-purple-400">🔵 Bluetooth</span> button in the left sidebar</li>
+                  <li>Click the <span className="font-semibold text-purple-400">🔵 Connect </span> button in the left sidebar</li>
                   <li>Your browser will show available Bluetooth devices</li>
                   <li>Select your Npg Lite device from the list</li>
                 </ul>
