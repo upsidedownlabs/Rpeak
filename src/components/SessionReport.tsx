@@ -322,7 +322,7 @@ export default function SessionReport({
                                     analysisResults.summary.heartRate.status === 'bradycardia' ? 'text-yellow-400' :
                                         'text-red-400'
                                     }`}>
-                                    {analysisResults.summary.heartRate.average.toFixed(1)} <span className="text-sm">BPM</span>
+                                    {(analysisResults.summary.heartRate.median ?? analysisResults.summary.heartRate.average).toFixed(1)} <span className="text-sm">BPM</span>
                                 </div>
                                 <div className="text-xs text-gray-500 mt-1">
                                     {analysisResults.summary.heartRate.status === 'normal' ? 'Normal Range' :

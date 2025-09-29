@@ -4,17 +4,15 @@ import React, { useState, useEffect } from 'react';
 import * as tf from '@tensorflow/tfjs';
 import { zscoreNorm, classLabels } from '../lib/modelTrainer';
 
-const INPUT_LENGTH = 135; // Updated to match your model's input shape
+const INPUT_LENGTH = 135; // 135 samples for 360Hz model (≈375ms)
 
 function getModelPath(): string {
   if (typeof window !== "undefined") {
     const path = window.location.pathname;
-    // Adjust 'Rpeak' to your actual repo name if different
     if (path.startsWith('/Rpeak')) {
       return '/Rpeak/models/beat-level-ecg-model.json';
     }
   }
-  // Default for local/dev
   return 'models/beat-level-ecg-model.json';
 }
 
@@ -76,7 +74,12 @@ export default function ModelInspector() {
             config,
             weightShapes,
             units: config.units,
-            activation: config.activation
+            activation: config.activation,
+            filters: config.filters,
+            kernelSize: config.kernelSize,
+            regularizer: config.kernelRegularizer,
+            poolSize: config.poolSize,
+            rate: config.rate
           };
         });
 
@@ -232,11 +235,12 @@ export default function ModelInspector() {
             <div className="mb-4 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
               <h3 className="text-blue-400 font-medium mb-2">Model Summary</h3>
               <div className="text-sm text-white">
+                <p><b>Architecture:</b> 4-layer 1D CNN (Conv1D + BatchNorm + MaxPool + Dropout), GlobalAvgPool, Dense layers, L2 regularization</p>
                 <p>Total Layers: {modelInfo.totalLayers}</p>
                 <p>Input Shape: [{modelInfo.inputShape.slice(1).join(', ')}]</p>
                 <p>Output Shape: [{modelInfo.outputShape.slice(1).join(', ')}]</p>
                 <p>Classes: {classLabels.join(', ')}</p>
-                <p>Beat Length: {INPUT_LENGTH} samples at 250Hz (≈0.376s)</p>
+                <p>Beat Length: {INPUT_LENGTH} samples at <span className="text-green-400">360Hz</span> (≈375ms)</p>
               </div>
             </div>
             <h3 className="text-white font-medium mb-2">Layers</h3>
@@ -247,11 +251,26 @@ export default function ModelInspector() {
                   <span className="text-gray-400 text-sm">{layer.type}</span>
                 </div>
                 <div className="mt-2 text-sm">
+                  {layer.filters !== undefined && (
+                    <p className="text-gray-300">Filters: {layer.filters}</p>
+                  )}
+                  {layer.kernelSize !== undefined && (
+                    <p className="text-gray-300">Kernel Size: {Array.isArray(layer.kernelSize) ? layer.kernelSize.join(',') : layer.kernelSize}</p>
+                  )}
+                  {layer.poolSize !== undefined && (
+                    <p className="text-gray-300">Pool Size: {layer.poolSize}</p>
+                  )}
                   {layer.units !== undefined && (
                     <p className="text-gray-300">Units: {layer.units}</p>
                   )}
                   {layer.activation && (
                     <p className="text-gray-300">Activation: {layer.activation}</p>
+                  )}
+                  {layer.rate !== undefined && (
+                    <p className="text-gray-300">Dropout Rate: {layer.rate}</p>
+                  )}
+                  {layer.regularizer && (
+                    <p className="text-gray-300">Regularizer: L2</p>
                   )}
                   <p className="text-gray-300">
                     Weight Shapes: {layer.weightShapes.map((shape: number[]) =>
@@ -339,8 +358,8 @@ export default function ModelInspector() {
             <div className="mb-4 p-3 bg-green-500/10 border border-green-500/30 rounded-lg">
               <h3 className="text-green-400 font-medium mb-2">Test Model</h3>
               <p className="text-sm text-white">
-                Paste {INPUT_LENGTH} comma-separated ECG values below and click &quot;Predict&quot; to test the model.
-                The model expects ECG beats of 94 samples at 250Hz (≈0.376 seconds).
+                Paste <b>{INPUT_LENGTH}</b> comma-separated ECG values below and click &quot;Predict&quot; to test the model.<br />
+                <span className="text-blue-300">The model expects ECG beats of 135 samples at 360Hz (≈375ms window).</span>
               </p>
             </div>
             <textarea

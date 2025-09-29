@@ -13,6 +13,7 @@ export type SessionAnalysisResults = {
         rPeaks?: number[];
         heartRate: {
             average: number;
+            median?: number;
             min: number;
             max: number;
             status: string;
@@ -112,19 +113,19 @@ export class SessionAnalyzer {
 
             for (const modelUrl of modelSources) {
                 try {
-                  
+
                     if (modelUrl.startsWith('localstorage://')) {
                         const models = await tf.io.listModels();
                         if (!models[modelUrl]) {
-                          
+
                             continue;
                         }
                     }
                     this.model = await tf.loadLayersModel(modelUrl);
-                   
+
                     return true;
                 } catch (err) {
-                  
+
                     continue;
                 }
             }
@@ -187,7 +188,9 @@ export class SessionAnalyzer {
         this.intervalCalculator.setGender(patientInfo.gender);
 
         // 1. Detect R-peaks
-        const peaks = this.panTompkins.detectQRS(ecgData);
+        const rPoints = this.pqrstDetector.detectDirectWaves(ecgData).filter(pt => pt.type === 'R');
+        const peaks = rPoints.map(pt => pt.index);
+
 
         // 2. Detect PQRST waves
         const pqrstPoints = this.pqrstDetector.detectWaves(ecgData, peaks, 0);
@@ -303,7 +306,7 @@ export class SessionAnalyzer {
 
         // Simplified ST analysis - in a real implementation, this would be more sophisticated
         const stDeviations: number[] = [];
-        
+
         pqrstPoints.forEach(point => {
             if (point.S && point.T) {
                 // Calculate ST segment deviation (simplified)
@@ -317,7 +320,7 @@ export class SessionAnalyzer {
         }
 
         const avgDeviation = stDeviations.reduce((sum, dev) => sum + dev, 0) / stDeviations.length;
-        
+
         let status = 'normal';
         if (avgDeviation > 0.1) {
             status = 'elevation';
@@ -332,52 +335,34 @@ export class SessionAnalyzer {
     }
 
     private adaptSignalForModel(ecgWindow: number[]): number[] {
-        // Step 1: Convert your normalized signal back to MIT-BIH-like scale
-        // Your signal: -1 to +1 → Convert to MIT-BIH: ~500-1500 range
-        const mitBihLikeSignal = ecgWindow.map(x => {
-            // Scale from [-1, +1] to MIT-BIH range [0, 2048] with 1024 baseline
-            return (x * 400) + 1024;  // Assumes typical ±400 unit variation
-        });
+        // Step 1: Use raw normalized signal (no mV conversion, no MIT-BIH scaling)
+        const rawSignal = ecgWindow;
 
-        // Step 2: Detect R-peak in the window
-        const centerIdx = Math.floor(ecgWindow.length / 2);
+        // Step 2: Polarity correction (R-peak should be positive)
+        const centerIdx = Math.floor(rawSignal.length / 2);
         const searchRange = 30;
-
         let maxIdx = centerIdx;
-        let maxValue = mitBihLikeSignal[centerIdx];
-
-        for (let i = Math.max(0, centerIdx - searchRange);
-             i < Math.min(ecgWindow.length, centerIdx + searchRange);
-             i++) {
-            if (Math.abs(mitBihLikeSignal[i] - 1024) > Math.abs(maxValue - 1024)) {
-                maxValue = mitBihLikeSignal[i];
+        let maxValue = rawSignal[centerIdx];
+        for (let i = Math.max(0, centerIdx - searchRange); i < Math.min(rawSignal.length, centerIdx + searchRange); i++) {
+            if (Math.abs(rawSignal[i]) > Math.abs(maxValue)) {
+                maxValue = rawSignal[i];
                 maxIdx = i;
             }
         }
+        const needsFlip = maxValue < 0;
+        const polarityCorrectedSignal = needsFlip
+            ? rawSignal.map(x => -x)
+            : rawSignal;
 
-        // Step 3: Apply MIT-BIH-style polarity correction
-        let needsFlip = false;
-        
-        // In MIT-BIH, R-peaks are typically positive deflections above 1024
-        if (maxValue < 1024) {
-            needsFlip = true;
-           }
-
-        const polarityCorrectedSignal = needsFlip ?
-            mitBihLikeSignal.map(x => 2048 - x) :  // Flip around 1024 baseline
-            mitBihLikeSignal;
-
-        // Step 4: Apply Z-score normalization (same as training)
+        // Step 3: Z-score normalization (mean=0, std=1)
         const mean = polarityCorrectedSignal.reduce((a, b) => a + b, 0) / polarityCorrectedSignal.length;
         const std = Math.sqrt(polarityCorrectedSignal.reduce((a, b) => a + (b - mean) ** 2, 0) / polarityCorrectedSignal.length);
 
-        if (std < 10) {  // Minimum std in MIT-BIH units
-           
+        if (std < 0.005) { // Minimum std for normalized data
             return new Array(ecgWindow.length).fill(0);
         }
 
         const normalizedSignal = polarityCorrectedSignal.map(x => (x - mean) / std);
-
 
         return normalizedSignal;
     }
@@ -389,9 +374,9 @@ export class SessionAnalyzer {
         stSegmentData: any,
         hrvMetrics: any,
         patientInfo: PatientInfo
-    ): Promise<{ 
-        prediction: string; 
-        confidence: number; 
+    ): Promise<{
+        prediction: string;
+        confidence: number;
         explanation: string;
         beatClassifications?: {
             normal: number;
@@ -462,7 +447,7 @@ export class SessionAnalyzer {
 
                 // CRITICAL: Apply the same signal adaptation as real-time analysis
                 const adaptedBeat = this.adaptSignalForModel(rawBeat);
-                
+
                 // Check if adaptation failed (returns zeros)
                 if (adaptedBeat.every(x => x === 0)) {
                     console.log("Session analysis: Beat adaptation failed, skipping");
@@ -472,14 +457,14 @@ export class SessionAnalyzer {
                 // Final z-score normalization of adapted signal
                 const mean = adaptedBeat.reduce((a, b) => a + b, 0) / adaptedBeat.length;
                 const std = Math.sqrt(adaptedBeat.reduce((a, b) => a + (b - mean) ** 2, 0) / adaptedBeat.length);
-                
+
                 if (std <= 0.005) {  // Relaxed threshold for consumer devices
                     console.log("Session analysis: Adapted beat too flat, skipping");
                     continue;
                 }
 
                 const normalizedBeat = adaptedBeat.map(x => (x - mean) / std);
-                
+
                 // Validate normalization
                 const normMean = normalizedBeat.reduce((a, b) => a + b, 0) / normalizedBeat.length;
                 if (Math.abs(normMean) > 0.3) {  // Relaxed threshold
@@ -489,11 +474,11 @@ export class SessionAnalyzer {
 
                 // Create input tensor for the model - shape [1, 135, 1]
                 const inputTensor = tf.tensor3d([normalizedBeat.map(v => [v])], [1, beatLength, 1]);
-                
+
                 try {
                     const outputTensor = this.model.predict(inputTensor) as tf.Tensor;
                     const probabilities = await outputTensor.data();
-                    
+
                     const predArray = Array.from(probabilities);
 
                     // Apply the same bias correction as real-time analysis
@@ -511,11 +496,11 @@ export class SessionAnalyzer {
 
                     const maxIndex = normalizedProbs.indexOf(Math.max(...normalizedProbs));
                     const confidence = normalizedProbs[maxIndex];
-                    
+
                     // Only accept predictions with reasonable confidence
                     if (maxIndex >= 0 && maxIndex < AAMI_CLASSES.length && confidence > 0.4) {  // Lowered from 0.5 to 0.4
                         const predictedClass = AAMI_CLASSES[maxIndex].toLowerCase();
-                        
+
                         // Count beat classifications
                         switch (predictedClass) {
                             case 'normal':
@@ -538,12 +523,12 @@ export class SessionAnalyzer {
                         confidenceSum += confidence;
 
                     }
-                    
+
                     outputTensor.dispose();
                 } catch (err) {
                     console.warn('Session analysis: Failed to predict beat:', err);
                 }
-                
+
                 inputTensor.dispose();
                 totalBeats++;
             }
@@ -555,7 +540,7 @@ export class SessionAnalyzer {
 
             if (validPredictions >= 3) {  // Require at least 3 valid beats for analysis
                 const totalValidBeats = Object.values(beatClassifications).reduce((sum, count) => sum + count, 0);
-                
+
                 // Calculate percentages
                 const normalPercent = (beatClassifications.normal / totalValidBeats) * 100;
                 const ventricularPercent = (beatClassifications.ventricular / totalValidBeats) * 100;
@@ -598,7 +583,7 @@ export class SessionAnalyzer {
                     }
                 }
 
-               }
+            }
 
             return {
                 prediction: overallPrediction,
@@ -619,7 +604,7 @@ export class SessionAnalyzer {
 
     // Update the explanation method to include beat count information
     private getExplanationForClassification(
-        prediction: string, 
+        prediction: string,
         beatClassifications: {
             normal: number;
             supraventricular: number;
@@ -630,7 +615,7 @@ export class SessionAnalyzer {
         validPredictions: number
     ): string {
         const total = Object.values(beatClassifications).reduce((sum, count) => sum + count, 0);
-        
+
         if (total === 0) {
             return "Insufficient quality data for reliable AI analysis. Signal may be too noisy or weak.";
         }
@@ -641,27 +626,27 @@ export class SessionAnalyzer {
 
         const explanations: { [key: string]: string } = {
             "Normal Sinus Rhythm": `Analysis of ${total} beats shows predominantly normal cardiac rhythm (${((beatClassifications.normal / total) * 100).toFixed(1)}% normal beats). Signal quality and beat morphology appear consistent with healthy sinus rhythm.`,
-            
+
             "Ventricular Arrhythmia": `Detected ${beatClassifications.ventricular} ventricular beats out of ${total} analyzed beats (${((beatClassifications.ventricular / total) * 100).toFixed(1)}%). This may indicate premature ventricular contractions (PVCs) or ventricular tachycardia.`,
-            
+
             "Supraventricular Arrhythmia": `Found ${beatClassifications.supraventricular} supraventricular beats out of ${total} analyzed beats (${((beatClassifications.supraventricular / total) * 100).toFixed(1)}%). This suggests arrhythmias originating above the ventricles.`,
-            
+
             "Fusion Beats Detected": `Identified ${beatClassifications.fusion} fusion beats out of ${total} analyzed beats. Fusion beats occur when multiple electrical impulses activate the heart simultaneously.`,
-            
+
             "Abnormal Rhythm": `Analysis detected irregular patterns in ${((beatClassifications.other / total) * 100).toFixed(1)}% of ${total} beats. The rhythm shows characteristics that don't fit typical arrhythmia categories.`,
-            
+
             "Mixed Rhythm Pattern": `Complex rhythm pattern detected with multiple beat types: Normal (${beatClassifications.normal}), Ventricular (${beatClassifications.ventricular}), Supraventricular (${beatClassifications.supraventricular}), Other (${beatClassifications.other}). This suggests a mixed arrhythmia.`,
-            
+
             "Bradycardia": `Slow heart rate detected in addition to beat morphology analysis. ${total} beats were analyzed for rhythm classification.`,
-            
+
             "Tachycardia": `Elevated heart rate detected along with beat pattern analysis of ${total} beats.`,
-            
+
             "Insufficient Data": `Only ${validPredictions} beats met quality standards for AI analysis. A longer recording with better signal quality is recommended.`,
-            
+
             "Analysis Error": "Technical error occurred during analysis. Please ensure good electrode contact and try recording again."
         };
 
-        return explanations[prediction] || 
+        return explanations[prediction] ||
             `AI analysis completed on ${total} beats using MIT-BIH compatible signal processing. The model detected patterns requiring clinical correlation.`;
     }
 
@@ -720,7 +705,7 @@ export class SessionAnalyzer {
         if (aiClassification.beatClassifications && aiClassification.beatClassifications.ventricular > 0) {
             const totalBeats = (Object.values(aiClassification.beatClassifications) as number[]).reduce((sum, count) => sum + count, 0);
             const ventricularPercent = (aiClassification.beatClassifications.ventricular / totalBeats) * 100;
-            
+
             if (ventricularPercent > 10) {
                 abnormalities.push({
                     type: 'Ventricular Arrhythmia',
@@ -752,9 +737,9 @@ export class SessionAnalyzer {
 
     private generateRecommendations(
         abnormalities: { type: string; severity: 'low' | 'medium' | 'high'; description: string }[],
-        aiClassification: { 
-            prediction: string; 
-            confidence: number; 
+        aiClassification: {
+            prediction: string;
+            confidence: number;
             explanation: string;
             beatClassifications?: {
                 normal: number;
@@ -782,7 +767,7 @@ export class SessionAnalyzer {
         if (aiClassification.beatClassifications) {
             const total = Object.values(aiClassification.beatClassifications).reduce((sum, count) => sum + count, 0);
             const ventricularPercent = (aiClassification.beatClassifications.ventricular / total) * 100;
-            
+
             if (ventricularPercent > 10) {
                 recommendations.push(
                     "Frequent ventricular beats detected. Avoid excessive caffeine and monitor for symptoms like palpitations."
@@ -803,10 +788,11 @@ export class SessionAnalyzer {
         average: number;
         min: number;
         max: number;
+        median: number;
     } {
         if (!peaks || peaks.length < 2) {
             console.warn("No valid R-peaks detected.");
-            return { average: 0, min: 0, max: 0 };
+            return { average: 0, min: 0, max: 0, median: 0 };
         }
 
         const rrIntervals = [];
@@ -819,20 +805,24 @@ export class SessionAnalyzer {
         const filteredRRs = rrIntervals.filter(rr => rr >= 300 && rr <= 2000);
 
         if (filteredRRs.length === 0) {
-           
-            return { average: 0, min: 0, max: 0 };
+            return { average: 0, min: 0, max: 0, median: 0 };
         }
 
-        const instantHRs = filteredRRs.map(rr => 60000 / rr);
+        // Calculate BPM for each RR interval
+        const bpms = filteredRRs.map(rr => 60000 / rr);
 
-        const average = instantHRs.reduce((sum, hr) => sum + hr, 0) / instantHRs.length;
-        const min = Math.min(...instantHRs);
-        const max = Math.max(...instantHRs);
+        // Mean, median, min, max BPM
+        const average = bpms.reduce((a, b) => a + b, 0) / bpms.length;
+        const sortedBPM = bpms.slice().sort((a, b) => a - b);
+        const median = sortedBPM[Math.floor(sortedBPM.length / 2)];
+        const min = Math.min(...bpms);
+        const max = Math.max(...bpms);
 
         return {
             average: isNaN(average) ? 0 : average,
             min: isNaN(min) ? 0 : min,
-            max: isNaN(max) ? 0 : max
+            max: isNaN(max) ? 0 : max,
+            median: isNaN(median) ? 0 : median
         };
     }
 

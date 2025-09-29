@@ -1,12 +1,11 @@
 "use client";
 import React, { useEffect, useRef, useState } from "react";
-import { Bluetooth, Eye, EyeOff, Activity, Zap, TrendingUp, Play, Square, Clock } from "lucide-react";
+import { Bluetooth, Activity, Zap, TrendingUp, Play, Square, Clock } from "lucide-react";
 import { WebglPlot, WebglLine, ColorRGBA } from "webgl-plot";
-import { BPMCalculator, filterQRS } from '../lib/bpmCalculator';
+import { BPMCalculator } from '../lib/bpmCalculator';
 import { HighpassFilter, NotchFilter, LowpassFilter } from "../lib/filters";
 import { HRVCalculator } from '../lib/hrvCalculator';
 import { PQRSTDetector, PQRSTPoint } from '../lib/pqrstDetector';
-import { PanTompkinsDetector } from '../lib/panTompkinsDetector';
 import { ECGIntervalCalculator, ECGIntervals } from '../lib/ecgIntervals';
 import * as tf from "@tensorflow/tfjs";
 import SessionRecording, { PatientInfo, RecordingSession } from './SessionRecording';
@@ -23,7 +22,6 @@ const SAMPLE_RATE = 360; // 360Hz sampling rate
 const MODEL_INPUT_LENGTH = 135; // 135 samples ≈ 375ms at 360Hz
 const SINGLE_SAMPLE_LEN = 7;
 const NEW_PACKET_LEN = 7 * 10;
-const BATCH_SIZE = 20;
 
 export default function EcgFullPanel() {
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -47,7 +45,9 @@ export default function EcgFullPanel() {
     const [sessionResults, setSessionResults] = useState<SessionAnalysisResults | null>(null);
     const [showSessionReport, setShowSessionReport] = useState(false);
     const sessionAnalyzer = useRef(new SessionAnalyzer(SAMPLE_RATE));
-
+    const [rPeakBuffer, setRPeakBuffer] = useState<number[]>([]);
+    const [bpmBuffer, setBpmBuffer] = useState<number[]>([]);
+    const BPM_AVG_WINDOW = 8; // Number of BPM values to average
     // Update this state for physiological state
     const [physioState, setPhysioState] = useState<{ state: string; confidence: number }>({
         state: "Analyzing",
@@ -86,7 +86,36 @@ export default function EcgFullPanel() {
 
     // Auto Analyze state and toggle function
     const [autoAnalyze, setAutoAnalyze] = useState(false);
+    const wglpRef = useRef<WebglPlot | null>(null);
+    const lineRef = useRef<WebglLine | null>(null);
+    const dataCh0 = useRef(new Array(NUM_POINTS).fill(0));
+    const peakData = useRef(new Array(NUM_POINTS).fill(0));
+    const sampleIndex = useRef(0);
+    const totalSamples = useRef(0);
+    const highpass = useRef(new HighpassFilter()); // Updated filter for 360Hz
+    const notch = useRef(new NotchFilter()); // Updated filter for 360Hz
+    const ecg = useRef(new LowpassFilter()); // Updated filter for 360Hz
+    const bpmCalculator = useRef(new BPMCalculator(SAMPLE_RATE, 5, 40, 200));
+    const hrvCalculator = useRef(new HRVCalculator());
+    const pqrstDetector = useRef(new PQRSTDetector(SAMPLE_RATE));
+    const pqrstPoints = useRef<PQRSTPoint[]>([]);
+    const pLineRef = useRef<WebglLine | null>(null);
+    const qLineRef = useRef<WebglLine | null>(null);
+    const rLineRef = useRef<WebglLine | null>(null);
+    const sLineRef = useRef<WebglLine | null>(null);
+    const tLineRef = useRef<WebglLine | null>(null);
+    const intervalCalculator = useRef(new ECGIntervalCalculator(SAMPLE_RATE));
+    // Add this state to store currently visible PQRST points
+    const [visiblePQRST, setVisiblePQRST] = useState<PQRSTPoint[]>([]);
+    // Add this state inside your component
+    const [stSegmentData, setSTSegmentData] = useState<STSegmentData | null>(null);
+    const [showAIAnalysis, setShowAIAnalysis] = useState(false); // Add this state to control AI Analysis panel visibility
 
+    // Add this type definition with your other types
+    type STSegmentData = {
+        deviation: number;
+        status: 'normal' | 'elevation' | 'depression';
+    };
 
     useEffect(() => {
         if (typeof window !== "undefined") {
@@ -105,46 +134,6 @@ export default function EcgFullPanel() {
         return () => clearInterval(interval);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [autoAnalyze, modelLoaded, ecgIntervals]);
-
-    const wglpRef = useRef<WebglPlot | null>(null);
-    const lineRef = useRef<WebglLine | null>(null);
-    const peakLineRef = useRef<WebglLine | null>(null);
-    const dataCh0 = useRef(new Array(NUM_POINTS).fill(0));
-    const peakData = useRef(new Array(NUM_POINTS).fill(0));
-    const sampleIndex = useRef(0);
-    const highpass = useRef(new HighpassFilter()); // Updated filter for 360Hz
-    const notch = useRef(new NotchFilter()); // Updated filter for 360Hz
-    const ecg = useRef(new LowpassFilter()); // Updated filter for 360Hz
-    const bpmCalculator = useRef(new BPMCalculator(SAMPLE_RATE, 5, 40, 200));
-    const hrvCalculator = useRef(new HRVCalculator());
-    const pqrstDetector = useRef(new PQRSTDetector(SAMPLE_RATE));
-    const pqrstPoints = useRef<PQRSTPoint[]>([]);
-    const pLineRef = useRef<WebglLine | null>(null);
-    const qLineRef = useRef<WebglLine | null>(null);
-    const rLineRef = useRef<WebglLine | null>(null);
-    const sLineRef = useRef<WebglLine | null>(null);
-    const tLineRef = useRef<WebglLine | null>(null);
-    const panTompkins = useRef(new PanTompkinsDetector(SAMPLE_RATE));
-    const intervalCalculator = useRef(new ECGIntervalCalculator(SAMPLE_RATE));
-    // Add this state to store currently visible PQRST points
-    const [visiblePQRST, setVisiblePQRST] = useState<PQRSTPoint[]>([]);
-    // Add this state inside your component
-    const [stSegmentData, setSTSegmentData] = useState<STSegmentData | null>(null);
-
-    // Add to EcgFullPanel component
-    const [beatPredictions, setBeatPredictions] = useState<{ prediction: string, confidence: number }[]>([]);
-    const [beatBuffer, setBeatBuffer] = useState<{ prediction: string, confidence: number }[]>([]);
-    const [batchResult, setBatchResult] = useState<{
-        summary: ReturnType<typeof getRollingSummary> | null,
-        latest: { prediction: string, confidence: number } | null
-    } | null>(null);
-
-
-    // Add this type definition with your other types
-    type STSegmentData = {
-        deviation: number;
-        status: 'normal' | 'elevation' | 'depression';
-    };
 
 
     useEffect(() => {
@@ -224,26 +213,6 @@ export default function EcgFullPanel() {
         return maxAbs > 0.9 ? 0.9 / maxAbs : 1;
     }
 
-    // Add this function to see what data we have
-    function getRollingSummary(buffer?: { prediction: string, confidence: number }[]) {
-        const arr = buffer ?? beatBuffer;
-        if (arr.length === 0) return null;
-        const counts: Record<string, number> = {};
-        arr.forEach(bp => {
-            counts[bp.prediction] = (counts[bp.prediction] || 0) + 1;
-        });
-        const total = arr.length;
-        const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-        const majorityClass = sorted[0][0];
-        const majorityPercent = (sorted[0][1] / total) * 100;
-        return {
-            majorityClass,
-            majorityPercent,
-            counts,
-            total
-        };
-    }
-
     function updatePeaks() {
         // Add debug for signal diagnostics
         const maxAbs = Math.max(...dataCh0.current.map(Math.abs));
@@ -260,8 +229,8 @@ export default function EcgFullPanel() {
             return;
         }
 
-        // Use Pan-Tompkins algorithm for peak detection
-        const peaks = panTompkins.current.detectQRS(dataCh0.current);
+        const pqrstPointsArr = pqrstDetector.current.detectDirectWaves(dataCh0.current);
+        const peaks = pqrstPointsArr.filter(p => p.type === 'R').map(p => p.index);
 
         // Fall back to original algorithm if Pan-Tompkins doesn't find peaks
         let usedPanTompkins = peaks.length > 0;
@@ -274,10 +243,8 @@ export default function EcgFullPanel() {
             }
         }
 
-
         // Generate visualization (same as before)
         peakData.current = bpmCalculator.current.generatePeakVisualization(dataCh0.current, peaks);
-
 
         // Try to detect PQRST waves
         let pqrstDetected = false;
@@ -304,20 +271,17 @@ export default function EcgFullPanel() {
             }
         }
 
-        // Extract RR intervals for HRV analysis
         if (peaks.length >= 2) {
-
             hrvCalculator.current.extractRRFromPeaks(peaks, SAMPLE_RATE);
-
-            // Only update HRV metrics if changed
             const metrics = hrvCalculator.current.getAllMetrics();
             setHrvMetrics(prev => {
-                // Simple shallow compare (customize as needed)
                 if (!prev || JSON.stringify(prev) !== JSON.stringify(metrics)) {
                     return metrics;
                 }
                 return prev;
             });
+        } else {
+            setHrvMetrics(null);
         }
 
         // Calculate ECG intervals when PQRST points are available
@@ -364,14 +328,63 @@ export default function EcgFullPanel() {
             setEcgIntervals(null);
         }
     }
+    useEffect(() => {
+        if (hrvMetrics && hrvMetrics.sampleCount >= 30) {
+            const stateObj = hrvCalculator.current.getPhysiologicalState();
+            setPhysioState(stateObj);
+        } else {
+            setPhysioState({ state: "Analyzing", confidence: 0 });
+        }
+    }, [hrvMetrics]);
 
-    // Remove the interval-based updater for visiblePQRST
+
     // Only clear visiblePQRST when hiding PQRST
     useEffect(() => {
         if (!showPQRST) {
             setVisiblePQRST([]);
         }
     }, [showPQRST]);
+
+    useEffect(() => {
+        if (rPeakBuffer.length >= BPM_AVG_WINDOW) {
+            // Calculate RR intervals (ms)
+            const rrIntervals = [];
+            for (let i = 1; i < rPeakBuffer.length; i++) {
+                const rr = (rPeakBuffer[i] - rPeakBuffer[i - 1]) / SAMPLE_RATE * 1000;
+                // Only include physiologically plausible intervals
+                if (rr >= 300 && rr <= 1500) rrIntervals.push(rr);
+            }
+            // Calculate BPMs from RR intervals
+            const bpms = rrIntervals.map(rr => 60000 / rr);
+            // Filter out outlier BPMs
+            const validBpms = bpms.filter(bpm => bpm >= 40 && bpm <= 200);
+            // Calculate moving average BPM
+            const avgBpm = validBpms.length > 0
+                ? validBpms.reduce((a, b) => a + b, 0) / validBpms.length
+                : 0;
+            // Calculate median BPM
+            const sortedBPM = bpms.slice().sort((a, b) => a - b);
+            const mid = Math.floor(sortedBPM.length / 2);
+            const median = sortedBPM.length % 2 === 0
+                ? (sortedBPM[mid - 1] + sortedBPM[mid]) / 2
+                : sortedBPM[mid];
+            setBpmDisplay(avgBpm > 0 ? `${avgBpm.toFixed(0)} BPM` : "-- BPM");
+        } else {
+            setBpmDisplay("-- BPM");
+        }
+    }, [rPeakBuffer]);
+
+    useEffect(() => {
+        if (bpmBuffer.length === BPM_AVG_WINDOW) {
+            const validBpms = bpmBuffer.filter(b => b > 0);
+            const avgBpm = validBpms.length > 0
+                ? validBpms.reduce((a, b) => a + b, 0) / validBpms.length
+                : 0;
+            setBpmDisplay(avgBpm >= 40 && avgBpm <= 200 ? `${avgBpm.toFixed(0)} BPM` : "-- BPM");
+        } else {
+            setBpmDisplay("-- BPM");
+        }
+    }, [bpmBuffer]);
 
     useEffect(() => {
         const timerInterval = setInterval(() => {
@@ -383,45 +396,21 @@ export default function EcgFullPanel() {
             }
 
             if (connected) {
-                // BPM
-                const peaks = panTompkins.current.detectQRS(dataCh0.current);
-                let finalPeaks = peaks;
-                if (peaks.length === 0) {
-                    finalPeaks = bpmCalculator.current.detectPeaks(dataCh0.current);
-                }
-                const bpm = bpmCalculator.current.calculateBPMFromPeaks(finalPeaks);
-                if (typeof bpm === "number" && bpm >= 40 && bpm <= 200) {
-                    const smoothedBPM = bpmCalculator.current.smoothBPM(bpm);
-                    if (smoothedBPM >= 40 && smoothedBPM <= 200) {
-                        setBpmDisplay(prev => {
-                            const newVal = Math.round(smoothedBPM) + " BPM";
-                            return prev === newVal ? prev : newVal;
-                        });
-                    } else {
-                        setBpmDisplay(prev => prev === "-- BPM" ? prev : "-- BPM");
-                    }
-                } else {
-                    setBpmDisplay(prev => prev === "-- BPM" ? prev : "-- BPM");
-                }
+                // Detect R-peaks
+                const pqrstPointsArr = pqrstDetector.current.detectDirectWaves(dataCh0.current);
+                const detectedPeaks = pqrstPointsArr.filter(p => p.type === 'R').map(p => p.index);
+                const currentTotal = totalSamples.current;
+                const absolutePeaks = detectedPeaks.map(idx => {
+                    if (currentTotal < NUM_POINTS) return idx;
+                    return currentTotal - NUM_POINTS + idx;
+                });
 
-                // HRV
-                const metrics = hrvCalculator.current.getAllMetrics();
-                if (metrics.sampleCount > 0) {
-                    setHrvMetrics(prev => {
-                        if (!prev || JSON.stringify(prev) !== JSON.stringify(metrics)) {
-                            return metrics;
-                        }
-                        return prev;
-                    });
-                    // Physio state
-                    const newState = hrvCalculator.current.getPhysiologicalState();
-                    setPhysioState(prev => {
-                        if (!prev || JSON.stringify(prev) !== JSON.stringify(newState)) {
-                            return newState;
-                        }
-                        return prev;
-                    });
-                }
+                // Update moving buffer with absolute sample counts
+                setRPeakBuffer(prev => {
+                    const lastPeak = prev.length > 0 ? prev[prev.length - 1] : -Infinity;
+                    const next = [...prev, ...absolutePeaks.filter(idx => idx > lastPeak)];
+                    return next.slice(-BPM_AVG_WINDOW);
+                });
             }
         }, 1000);
         return () => clearInterval(timerInterval);
@@ -489,6 +478,7 @@ export default function EcgFullPanel() {
                         // Store and use filtered value
                         dataCh0.current[sampleIndex.current] = filtered;
                         sampleIndex.current = (sampleIndex.current + 1) % NUM_POINTS;
+                        totalSamples.current += 1;
                     }
 
                     // Call updatePeaks to refresh the PQRST points with each new data packet
@@ -500,15 +490,12 @@ export default function EcgFullPanel() {
             setStartTime(Date.now());
             bpmCalculator.current.reset();
             hrvCalculator.current.reset();
-            panTompkins.current.reset(); // Reset Pan-Tompkins detector
             intervalCalculator.current.reset(); // Reset interval calculator
 
         } catch (e) {
             console.error("BLE Connection failed:", e);
         }
     }
-
-    // adaptSignalForModel function with this enhanced version:
 
     // Utility: Convert normalized value (-1 to +1) to millivolts (mV)
     function normalizedToMillivolts(normValue: number): number {
@@ -576,13 +563,15 @@ export default function EcgFullPanel() {
             return;
         }
 
-        // Use the same peak detection pipeline as your main application
-        const detectedPeaks = panTompkins.current.detectQRS(dataCh0.current);
+        // Use PQRSTDetector for peak detection
+        const pqrstPointsArr = pqrstDetector.current.detectDirectWaves(dataCh0.current);
+        const detectedPeaks = pqrstPointsArr.filter(p => p.type === 'R').map(p => p.index);
 
-        // If Pan-Tompkins fails, use backup method
+        // If PQRST fails, use backup method
         const recentPeaks = detectedPeaks.length > 0
             ? detectedPeaks
             : bpmCalculator.current.detectPeaks(dataCh0.current);
+
 
         // Filter peaks to ensure physiological plausibility
         const filteredPeaks = recentPeaks.filter((peak, index) => {
@@ -612,7 +601,6 @@ export default function EcgFullPanel() {
             ecgWindow.push(dataCh0.current[actualIdx]);
         }
 
-
         // CRITICAL: Adapt signal to match training data characteristics
         const adaptedSignal = adaptSignalForModel(ecgWindow);
 
@@ -628,7 +616,6 @@ export default function EcgFullPanel() {
         }
 
         const normWindow = adaptedSignal.map(x => (x - windowMean) / windowStd);
-
 
         // Validate normalized data
         const normMean = normWindow.reduce((a, b) => a + b, 0) / normWindow.length;
@@ -659,7 +646,6 @@ export default function EcgFullPanel() {
 
             const predArray = Array.from(probabilities);
 
-
             const deviceBiasCorrection = [
                 1.4,  // Normal: moderate boost (reduced from 1.8)
                 0.9,  // Supraventricular: mild reduction (increased from 0.7)
@@ -672,10 +658,8 @@ export default function EcgFullPanel() {
             const correctedSum = correctedProbs.reduce((a, b) => a + b, 0);
             const normalizedProbs = correctedProbs.map(p => p / correctedSum);
 
-
             const maxIndex = normalizedProbs.indexOf(Math.max(...normalizedProbs));
             const confidence = normalizedProbs[maxIndex] * 100;
-
 
             // Slightly reduced confidence threshold
             if (confidence < 40) {  // Reduced from 45
@@ -701,26 +685,6 @@ export default function EcgFullPanel() {
                 confidence: confidence
             });
 
-            // RAISED confidence floor for rolling analysis as you suggested
-            if (confidence >= 60) {  // REDUCED from 70 to 60
-                setBeatPredictions(prev => {
-                    const updated = [...prev, { prediction: predictedClass, confidence }];
-                    const rolling = updated.slice(-BATCH_SIZE);
-
-                    if (rolling.length > 0) {
-                        const summary = getRollingSummary(rolling);
-                        setBatchResult({
-                            summary,
-                            latest: rolling[rolling.length - 1]
-                        });
-
-                    }
-                    return rolling;
-                });
-            } else {
-
-            }
-
             inputTensor.dispose();
             outputTensor.dispose();
         } catch (err) {
@@ -730,19 +694,18 @@ export default function EcgFullPanel() {
         }
     };
 
-
-    // Add this to keep PQRST labels moving with the wave
     useEffect(() => {
         if (!showPQRST) return;
 
-        // Update the PQRST labels position when the data is refreshed
+        let lastPointsStr = JSON.stringify(pqrstPoints.current);
+
         const pqrstUpdateInterval = setInterval(() => {
-            const newPoints = JSON.stringify(pqrstPoints.current);
-            setVisiblePQRST(prev => {
-              const prevStr = JSON.stringify(prev);
-              return prevStr === newPoints ? prev : [...pqrstPoints.current];
-            });
-        }, 200); // Update at 5fps for smoother movement
+            const newPointsStr = JSON.stringify(pqrstPoints.current);
+            if (lastPointsStr !== newPointsStr) {
+                setVisiblePQRST([...pqrstPoints.current]);
+                lastPointsStr = newPointsStr;
+            }
+        }, 200);
 
         return () => clearInterval(pqrstUpdateInterval);
     }, [showPQRST]);
@@ -771,43 +734,6 @@ export default function EcgFullPanel() {
         return () => clearInterval(signalQualityInterval);
     }, [connected]);
 
-    // Add this before the return statement in your EcgFullPanel component
-    const renderAbnormalityWarnings = (intervals: ECGIntervals) => {
-        const warnings = [];
-
-        // QRS wide: check AI prediction for R/L
-        if (intervals.status.qrs === 'wide') {
-            if (modelPrediction?.prediction === "R") {
-                warnings.push({ text: 'Right bundle branch block (RBBB)', color: 'text-red-400' });
-            } else if (modelPrediction?.prediction === "L") {
-                warnings.push({ text: 'Left bundle branch block (LBBB)', color: 'text-red-400' });
-            } else {
-                warnings.push({ text: 'Possible bundle branch block', color: 'text-red-400' });
-            }
-        }
-
-        if (intervals.status.pr === 'long')
-            warnings.push({ text: 'Possible 1st degree AV block', color: 'text-red-400' });
-
-        if (intervals.status.qtc === 'prolonged')
-            warnings.push({ text: 'QT prolongation - arrhythmia risk', color: 'text-red-400' });
-
-        if (warnings.length === 0) return null;
-
-        return (
-            <div className="mt-4 p-3 rounded-lg border border-red-500/30 bg-red-500/10">
-                <h4 className="text-sm font-medium text-red-400 mb-2">Potential Findings:</h4>
-                <ul className="space-y-1 text-sm">
-                    {warnings.map((warning, i) => (
-                        <li key={i} className={`flex items-center gap-2 ${warning.color}`}>
-                            <span>•</span>
-                            <span>{warning.text}</span>
-                        </li>
-                    ))}
-                </ul>
-            </div>
-        );
-    };
 
     // Add this function inside your EcgFullPanel component
     const analyzeSTSegment = (pqrstPoints: PQRSTPoint[]): STSegmentData | null => {
@@ -851,9 +777,6 @@ export default function EcgFullPanel() {
         return { deviation, status };
     };
 
-
-    const [showAIAnalysis, setShowAIAnalysis] = useState(false); // Add this state to control AI Analysis panel visibility
-
     // Effect to run analyzeCurrent automatically when panel is visible
     useEffect(() => {
         if (!showAIAnalysis) return;
@@ -866,7 +789,7 @@ export default function EcgFullPanel() {
         // Set up auto-refresh every 1 minute (60,000 ms)
         const interval = setInterval(() => {
             analyzeCurrent();
-        }, 60000); // 1 minute refresh
+        }, 3000); // 3 second refresh
 
         return () => {
             clearInterval(interval);
@@ -919,21 +842,18 @@ export default function EcgFullPanel() {
 
     const stopRecording = () => {
         if (!isRecording || !currentSession || !recordingStartTime) {
-
             return null;
         }
 
         const endTime = Date.now();
         const duration = (endTime - recordingStartTime) / 1000;
 
-        const freshRPeaks = panTompkins.current.detectQRS(recordedData);
+        // FIX: Detect peaks directly on recordedData for correct interval analysis
+        const recordedPQRST = pqrstDetector.current.detectDirectWaves(recordedData);
+        const freshRPeaks = recordedPQRST.filter(p => p.type === 'R').map(p => p.index);
         const freshPQRST = pqrstDetector.current.detectWaves(recordedData, freshRPeaks, 0);
 
         const freshIntervals = intervalCalculator.current.calculateIntervals(freshPQRST);
-
-        if (!freshIntervals) {
-
-        }
 
         const updatedSession: RecordingSession = {
             ...currentSession,
@@ -1029,15 +949,15 @@ export default function EcgFullPanel() {
         <div className="relative w-full h-full bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 ">
             {/* Patient Info Modal (overlay, not in sidebar) */}
             {showPatientInfo && (
-    <SessionRecording
-        connected={connected}
-        onStartRecording={startRecording}
-        onStopRecording={stopRecording}
-        isRecording={isRecording}
-        recordingTime={recordingTime}
-        onClose={() => setShowPatientInfo(false)} // ✅ Use a stable callback
-    />
-)}
+                <SessionRecording
+                    connected={connected}
+                    onStartRecording={startRecording}
+                    onStopRecording={stopRecording}
+                    isRecording={isRecording}
+                    recordingTime={recordingTime}
+                    onClose={() => setShowPatientInfo(false)} // ✅ Use a stable callback
+                />
+            )}
             {showSessionReport && sessionResults && (
                 <SessionReport
                     analysisResults={sessionResults}
@@ -1182,7 +1102,7 @@ export default function EcgFullPanel() {
                                         }}
                                         disabled={!connected}
                                         className={`w-10 h-10 flex items-center justify-center rounded-full transition-all shadow-md
-            ${connected
+                                        ${connected
                                                 ? 'bg-green-500/20 text-green-400 border border-green-500/30 hover:bg-green-500/30'
                                                 : 'bg-gray-500/20 text-gray-400 border border-gray-700 cursor-not-allowed'
                                             }`}
@@ -1194,7 +1114,7 @@ export default function EcgFullPanel() {
                                     <button
                                         onClick={stopRecording}
                                         className="w-10 h-10 flex items-center justify-center rounded-full transition-all shadow-md
-            bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30"
+                                     bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30"
                                         title="Stop Recording"
                                     >
                                         <Square className="w-5 h-5" />
@@ -1414,7 +1334,7 @@ export default function EcgFullPanel() {
                         <div className="flex items-center justify-between text-sm">
                             <span className="text-blue-400">Analysis Status:</span>
                             <span className={`font-semibold ${modelLoaded && connected ? 'text-green-400' : 'text-yellow-400'}`}>
-                                {modelLoaded && connected ? '🟢 Active (1 min refresh)' :
+                                {modelLoaded && connected ? '🟢 Active (3 sec refresh)' :
                                     modelLoaded ? '🟡 Ready (connect device)' : '🔴 Loading model...'}
                             </span>
                         </div>
@@ -1545,7 +1465,7 @@ export default function EcgFullPanel() {
                                                 }`}>
                                                 {
                                                     ecgIntervals?.bpm > 0
-                                                        ? ecgIntervals.bpm.toFixed(1)
+                                                        ? ecgIntervals.bpm.toFixed(0)
                                                         : (() => {
                                                             // Use your actual R-peak indices array here
                                                             const rPeaks = pqrstPoints.current.filter(p => p.type === "R").map(p => p.index);
@@ -1604,8 +1524,6 @@ export default function EcgFullPanel() {
                                             </div>
                                         </div>
 
-
-
                                         {/* QRS Duration with explanation */}
                                         <div className="p-3 rounded-lg border border-white/20 bg-black/40">
                                             <div className="flex justify-between items-center">
@@ -1641,8 +1559,6 @@ export default function EcgFullPanel() {
                                             </div>
                                         )}
                                     </div>
-
-
 
                                     {/* Abnormality indicators - full width */}
                                     {ecgIntervals.status.pr === 'long' || ecgIntervals.status.qrs === 'wide' || ecgIntervals.status.qtc === 'prolonged' ? (
@@ -1682,7 +1598,7 @@ export default function EcgFullPanel() {
                                 </div>
                             )}
                         </div>
-                                                         </div>
+                    </div>
                 </div>
             )}
 
@@ -1732,7 +1648,7 @@ export default function EcgFullPanel() {
 
             {/* Recording indicator - new addition */}
             {isRecording && (
-                <div className="fixed top-6 left-1/2 transform -translate-x-1/2 z-80 flex items-center px-4 py-2 rounded-full bg-red-900/80 border border-red-500/30 shadow-lg">
+                <div className="fixed top-6 left-1/2 transform -translate-x-1/2 z-80 flex items-center px-4 py-2 rounded-full bg-red-900/80 border border-red-500/30 shadowlg">
                     <Clock className="w-5 h-5 text-red-400 mr-2" />
                     <span className="font-mono text-lg text-red-400">{recordingTime}</span>
                     <span className="ml-1 text-xs text-red-400 font-semibold animate-pulse">Recording...</span>

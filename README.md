@@ -143,6 +143,20 @@ You can modify the model architecture or preprocessing steps in `src/lib/modelTr
 
 ---
 
+## Recommended Electrode Placement
+
+For optimal ECG signal quality with the Npg Lite device, place the electrodes as follows:
+
+- **Positive (Red):** Left chest, just below the left collarbone, positioned slightly to the right of the negative electrode.
+- **Negative (Black):** Left chest, just below the left collarbone, positioned slightly to the left of the positive electrode.
+- **Reference (Green):** Right chest, just below the right collarbone.
+
+This configuration helps maximize R-wave amplitude and minimize noise for reliable single-lead ECG monitoring.
+
+> **Tip:** For best results, clean the skin with alcohol swabs before attaching electrodes.
+
+----
+
 ### Browser Compatibility
 - **Recommended:** Chrome, Edge
 - **Required:** Web Bluetooth API support

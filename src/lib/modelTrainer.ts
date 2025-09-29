@@ -1,5 +1,6 @@
 import * as tf from "@tensorflow/tfjs";
 import Papa from "papaparse";
+import { Highpass, Notch, Lowpass } from "./filters";
 
 // --- 1. Map MIT-BIH annotation symbols to AAMI 5-class standard ---
 export const AAMI_CLASSES = ["Normal", "Supraventricular", "Ventricular", "Fusion", "Other"];
@@ -49,6 +50,22 @@ export async function loadBeatLevelData(
     });
   });
 
+  // Initialize filters
+const hp = new Highpass();
+const notch = new Notch();
+const lp = new Lowpass();
+
+// Apply filters in sequence to the ECG signal
+const filteredECG = ecgSignal.map(sample => {
+    let x = hp.process(sample);
+    x = notch.process(x);
+    x = lp.process(x);
+    return x;
+});
+
+// Use filteredECG for all downstream processing
+const finalECG = filteredECG;
+
   // Load annotation CSV (index, annotation_symbol)
   const annotations: { index: number, annotation_symbol: string }[] = await new Promise((resolve, reject) => {
     Papa.parse(annPath, {
@@ -82,7 +99,6 @@ export async function loadBeatLevelData(
   });
 
   // No resampling - use original ECG signal and annotations directly
-  const finalECG = ecgSignal;
   const finalAnnotations = annotations.filter(ann => {
     const valid = ann.index >= 0 && ann.index < finalECG.length;
     
@@ -484,4 +500,3 @@ export async function trainBeatLevelECGModelAllFiles(
   predictions.dispose();
   return model;
 }
-
