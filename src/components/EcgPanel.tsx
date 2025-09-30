@@ -46,32 +46,15 @@ export default function EcgFullPanel() {
     const [showSessionReport, setShowSessionReport] = useState(false);
     const sessionAnalyzer = useRef(new SessionAnalyzer(SAMPLE_RATE));
     const [rPeakBuffer, setRPeakBuffer] = useState<number[]>([]);
-    const [bpmBuffer, setBpmBuffer] = useState<number[]>([]);
+    // Patient Info modal state
+    const [showPatientInfo, setShowPatientInfo] = useState(false);
+
     const BPM_AVG_WINDOW = 8; // Number of BPM values to average
     // Update this state for physiological state
     const [physioState, setPhysioState] = useState<{ state: string; confidence: number }>({
         state: "Analyzing",
         confidence: 0
     });
-
-    type HRVMetrics = {
-        sampleCount: number;
-        assessment: {
-            color: string;
-            status: string;
-            description: string;
-        };
-        rmssd: number;
-        sdnn: number;
-        pnn50: number;
-        triangularIndex: number;
-        lfhf: {
-            lf: number;
-            hf: number;
-            ratio: number;
-        };
-        // Add any other fields returned by getAllMetrics()
-    };
 
     const [hrvMetrics, setHrvMetrics] = useState<HRVMetrics | null>(null);
     const [ecgIntervals, setEcgIntervals] = useState<ECGIntervals | null>(null);
@@ -110,6 +93,30 @@ export default function EcgFullPanel() {
     // Add this state inside your component
     const [stSegmentData, setSTSegmentData] = useState<STSegmentData | null>(null);
     const [showAIAnalysis, setShowAIAnalysis] = useState(false); // Add this state to control AI Analysis panel visibility
+    // Minimum standard deviation for a valid ECG beat window.
+    // Empirically chosen for consumer device noise floor.
+    // If std is below this, signal is considered "flat" (no valid beat).
+    const FLAT_SIGNAL_STD_THRESHOLD = 0.005;
+    const recordBufferRef = useRef<number[]>([]);
+
+    type HRVMetrics = {
+        sampleCount: number;
+        assessment: {
+            color: string;
+            status: string;
+            description: string;
+        };
+        rmssd: number;
+        sdnn: number;
+        pnn50: number;
+        triangularIndex: number;
+        lfhf: {
+            lf: number;
+            hf: number;
+            ratio: number;
+        };
+
+    };
 
     // Add this type definition with your other types
     type STSegmentData = {
@@ -124,12 +131,12 @@ export default function EcgFullPanel() {
         }
     }, []);
 
-    // Effect to run analyzeCurrent automatically if autoAnalyze is enabled
+    // Effect to run AianalyzeCurrent automatically if autoAnalyze is enabled
     useEffect(() => {
         if (!autoAnalyze) return;
         if (!modelLoaded || !ecgIntervals) return;
         const interval = setInterval(() => {
-            analyzeCurrent();
+            AianalyzeCurrent();
         }, 60000); // 1 minute refresh
         return () => clearInterval(interval);
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -209,8 +216,12 @@ export default function EcgFullPanel() {
     }, [peaksVisible, showPQRST]);
 
     function getScaleFactor() {
+        // Defensive: avoid division by zero and extreme scaling
         const maxAbs = Math.max(...dataCh0.current.map(Math.abs), 0.1);
-        return maxAbs > 0.9 ? 0.9 / maxAbs : 1;
+        let scale = maxAbs > 0.9 ? 0.9 / maxAbs : 1;
+        // Clamp scale factor to [0.5, 1] for UI stability
+        scale = Math.max(0.5, Math.min(scale, 1));
+        return scale;
     }
 
     function updatePeaks() {
@@ -368,23 +379,11 @@ export default function EcgFullPanel() {
             const median = sortedBPM.length % 2 === 0
                 ? (sortedBPM[mid - 1] + sortedBPM[mid]) / 2
                 : sortedBPM[mid];
-            setBpmDisplay(avgBpm > 0 ? `${avgBpm.toFixed(0)} BPM` : "-- BPM");
+            setBpmDisplay(median > 0 ? `${median.toFixed(0)} BPM` : "-- BPM");
         } else {
             setBpmDisplay("-- BPM");
         }
     }, [rPeakBuffer]);
-
-    useEffect(() => {
-        if (bpmBuffer.length === BPM_AVG_WINDOW) {
-            const validBpms = bpmBuffer.filter(b => b > 0);
-            const avgBpm = validBpms.length > 0
-                ? validBpms.reduce((a, b) => a + b, 0) / validBpms.length
-                : 0;
-            setBpmDisplay(avgBpm >= 40 && avgBpm <= 200 ? `${avgBpm.toFixed(0)} BPM` : "-- BPM");
-        } else {
-            setBpmDisplay("-- BPM");
-        }
-    }, [bpmBuffer]);
 
     useEffect(() => {
         const timerInterval = setInterval(() => {
@@ -498,15 +497,19 @@ export default function EcgFullPanel() {
     }
 
     // Utility: Convert normalized value (-1 to +1) to millivolts (mV)
-    function normalizedToMillivolts(normValue: number): number {
-        const adcValue = normValue * 2048 + 2048;
-        return (adcValue * 3.1 * 1000) / (4096 * 1650);
+    function normalizedToMillivolts(normValue: number, vref = 3.1, adcMax = 4095, gain = 1650): number {
+        // normValue = (raw - 2048)/2048  (your code). Reconstruct raw ADC:
+        const adcValue = Math.round(normValue * 2048 + 2048);
+        // ADC volts:
+        const volts = (adcValue / adcMax) * vref;
+        // Convert to mV and divide by amplifier gain to get electrode mV
+        return (volts * 1000) / gain;
     }
 
     // --- Update adaptSignalForModel ---
     const adaptSignalForModel = (ecgWindow: number[]): number[] => {
         // Step 1: Convert normalized signal to mV
-        const mVSignal = ecgWindow.map(normalizedToMillivolts);
+        const mVSignal = ecgWindow.map(normValue => normalizedToMillivolts(normValue));
 
         // Step 2: Detect R-peak in the window (centered)
         const centerIdx = Math.floor(ecgWindow.length / 2);
@@ -524,41 +527,47 @@ export default function EcgFullPanel() {
             }
         }
 
+        // Step 2b: Shift window so R-peak is centered
+        const shift = centerIdx - maxIdx;
+        const shifted = Array(ecgWindow.length);
+        for (let i = 0; i < ecgWindow.length; i++) {
+            const src = (i - shift + ecgWindow.length) % ecgWindow.length;
+            shifted[i] = mVSignal[src];
+        }
+
         // Step 3: Polarity correction (R-peaks should be positive)
         let needsFlip = false;
         if (maxValue < 0) needsFlip = true;
 
         const polarityCorrectedSignal = needsFlip
-            ? mVSignal.map(x => -x)
-            : mVSignal;
+            ? shifted.map(x => -x)
+            : shifted;
 
-        // Step 4: Z-score normalization
         const mean = polarityCorrectedSignal.reduce((a, b) => a + b, 0) / polarityCorrectedSignal.length;
         const std = Math.sqrt(polarityCorrectedSignal.reduce((a, b) => a + (b - mean) ** 2, 0) / polarityCorrectedSignal.length);
 
-        if (std < 0.001) { // Match training threshold
+        // Unified threshold for flat signal
+        if (std < FLAT_SIGNAL_STD_THRESHOLD) {
             return new Array(ecgWindow.length).fill(0);
         }
 
-        const normalizedSignal = polarityCorrectedSignal.map(x => (x - mean) / std);
-
-        return normalizedSignal;
+        return polarityCorrectedSignal;
     };
 
-    // --- Update analyzeCurrent signal quality check ---
-    const analyzeCurrent = async () => {
+    // --- Update AianalyzeCurrent signal quality check ---
+    const AianalyzeCurrent = async () => {
         if (!ecgModel) {
             setModelPrediction({ prediction: "Analyzing", confidence: 0 });
             return;
         }
 
         // Convert signal to mV for quality check
-        const mVData = dataCh0.current.map(normalizedToMillivolts);
-        const maxAbs = Math.max(...mVData.map(Math.abs));
-        const variance = mVData.reduce((sum, val) => sum + Math.pow(val, 2), 0) / mVData.length;
+        const mVData = dataCh0.current.map(normValue => normalizedToMillivolts(normValue));
+        const mean = mVData.reduce((sum, val) => sum + val, 0) / mVData.length;
+        const variance = mVData.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / mVData.length;
 
         // Quality thresholds in mV (e.g., 0.05 mV = 50 μV)
-        if (maxAbs < 0.05 || variance < 0.001) {
+        if (Math.max(...mVData.map(Math.abs)) < 0.05 || variance < 0.001) {
             setModelPrediction({ prediction: "Poor Signal", confidence: 0 });
             return;
         }
@@ -608,9 +617,8 @@ export default function EcgFullPanel() {
         const windowMean = adaptedSignal.reduce((a, b) => a + b, 0) / adaptedSignal.length;
         const windowStd = Math.sqrt(adaptedSignal.reduce((a, b) => a + (b - windowMean) ** 2, 0) / adaptedSignal.length);
 
-        // RELAXED variance threshold for consumer devices
-        if (windowStd < 0.005) {  // Reduced from 0.01
-
+        // Unified threshold for flat signal
+        if (windowStd < FLAT_SIGNAL_STD_THRESHOLD) {
             setModelPrediction({ prediction: "Flat Signal", confidence: 0 });
             return;
         }
@@ -736,6 +744,7 @@ export default function EcgFullPanel() {
 
 
     // Add this function inside your EcgFullPanel component
+    // ...existing code...
     const analyzeSTSegment = (pqrstPoints: PQRSTPoint[]): STSegmentData | null => {
         // Find relevant points
         const sPoint = pqrstPoints.find(p => p.type === 'S');
@@ -769,26 +778,26 @@ export default function EcgFullPanel() {
         // Calculate ST deviation in mm (1mm = 0.1mV in standard ECG)
         const deviation = (stValue - baseline) * 10;
 
-        // Determine status
+        // Determine status using standard clinical thresholds
         let status: 'normal' | 'elevation' | 'depression' = 'normal';
-        if (deviation >= 0.2) status = 'elevation';
-        else if (deviation <= -0.1) status = 'depression';
+        if (deviation >= 1.0) status = 'elevation';
+        else if (deviation <= -0.5) status = 'depression';
 
         return { deviation, status };
     };
 
-    // Effect to run analyzeCurrent automatically when panel is visible
+    // Effect to run AianalyzeCurrent automatically when panel is visible
     useEffect(() => {
         if (!showAIAnalysis) return;
         if (!modelLoaded || !connected) return; // Changed from ecgIntervals to connected
 
 
         // Run initial analysis immediately
-        analyzeCurrent();
+        AianalyzeCurrent();
 
-        // Set up auto-refresh every 1 minute (60,000 ms)
+        // Set up auto-refresh every 30 seconds (3000 ms)
         const interval = setInterval(() => {
-            analyzeCurrent();
+            AianalyzeCurrent();
         }, 3000); // 3 second refresh
 
         return () => {
@@ -819,6 +828,17 @@ export default function EcgFullPanel() {
 
         return () => clearInterval(timerInterval);
     }, [isRecording, recordingStartTime]);
+
+    // Periodically flush buffer to recordedData
+    useEffect(() => {
+        if (!isRecording) return;
+        const id = setInterval(() => {
+            if (recordBufferRef.current.length > 0) {
+                setRecordedData(prev => prev.concat(recordBufferRef.current.splice(0)));
+            }
+        }, 250);
+        return () => clearInterval(id);
+    }, [isRecording]);
 
     // Add these functions to handle recording
     const startRecording = (patientInfo: PatientInfo) => {
@@ -940,10 +960,6 @@ export default function EcgFullPanel() {
             setRecordedData(prev => [...prev, ...newData]);
         }
     }, [isRecording, sampleIndex.current]);
-
-    // Patient Info modal state
-    const [showPatientInfo, setShowPatientInfo] = useState(false);
-
 
     return (
         <div className="relative w-full h-full bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 ">
@@ -1141,7 +1157,7 @@ export default function EcgFullPanel() {
                                             const next = !prev;
                                             // Always try to analyze if opening panel and model is loaded
                                             if (next && modelLoaded) {
-                                                analyzeCurrent();
+                                                AianalyzeCurrent();
                                             }
                                             return next;
                                         });
@@ -1555,6 +1571,10 @@ export default function EcgFullPanel() {
                                                     {stSegmentData.status === 'normal' ? 'Normal ST segment' :
                                                         stSegmentData.status === 'elevation' ? 'ST elevation detected' :
                                                             'ST depression detected'}
+                                                </div>
+                                                {/* Add clinical threshold label */}
+                                                <div className="text-xs text-blue-400 mt-1 italic">
+                                                    Thresholds are set to standard clinical values (≥1.0 mm elevation, ≤-0.5 mm depression).
                                                 </div>
                                             </div>
                                         )}
