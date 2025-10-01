@@ -98,7 +98,17 @@ export default function EcgFullPanel() {
     // If std is below this, signal is considered "flat" (no valid beat).
     const FLAT_SIGNAL_STD_THRESHOLD = 0.005;
     const recordBufferRef = useRef<number[]>([]);
+    const [rPeakTimestamps, setRPeakTimestamps] = useState<number[]>([]);
+    const ECG_START_TIME = useRef<number | null>(null);
+    const lastAcceptedPeakRef = useRef<number | null>(null);
+    const REFRACTORY_MS = 200; // ms
 
+    // Call this on connect/disconnect to reset timing state
+    const resetEcgTiming = React.useCallback(() => {
+        ECG_START_TIME.current = null;
+        lastAcceptedPeakRef.current = null;
+        setRPeakTimestamps([]);
+    }, []);
     type HRVMetrics = {
         sampleCount: number;
         assessment: {
@@ -243,6 +253,7 @@ export default function EcgFullPanel() {
         const pqrstPointsArr = pqrstDetector.current.detectDirectWaves(dataCh0.current);
         const peaks = pqrstPointsArr.filter(p => p.type === 'R').map(p => p.index);
 
+
         // Fall back to original algorithm if Pan-Tompkins doesn't find peaks
         let usedPanTompkins = peaks.length > 0;
 
@@ -310,34 +321,17 @@ export default function EcgFullPanel() {
                 return; // <-- Only return if intervals are set
             }
         }
+        // Add this block to define absolutePeaks
+        const currentTotal = totalSamples.current;
+        const absolutePeaks = peaks.map(idx => {
+            if (currentTotal < NUM_POINTS) return idx;
+            return currentTotal - NUM_POINTS + idx;
+        });
 
-        // Fallback: If enough R-peaks, estimate BPM directly
-        if (peaks.length >= 2) {
-            const rrIntervals = [];
-            for (let i = 1; i < peaks.length; i++) {
-                rrIntervals.push((peaks[i] - peaks[i - 1]) / SAMPLE_RATE * 1000);
-            }
-            const avgRR = rrIntervals.reduce((a, b) => a + b, 0) / rrIntervals.length;
-            const bpm = avgRR > 0 ? 60000 / avgRR : 0;
-            setEcgIntervals({
-                rr: avgRR,
-                pr: 0,
-                qrs: 0,
-                qt: 0,
-                qtc: 0,
-                bpm,
-                status: {
-                    rr: avgRR < 600 ? 'short' : avgRR > 1000 ? 'long' : 'normal',
-                    pr: 'unknown',
-                    qrs: 'unknown',
-                    qt: 'unknown',
-                    qtc: 'unknown',
-                    bpm: bpm < 60 ? 'bradycardia' : bpm > 100 ? 'tachycardia' : 'normal'
-                }
-            });
-        } else {
-            setEcgIntervals(null);
-        }
+        // Now call handleNewRPeak for each detected absolute R-peak
+        absolutePeaks.forEach(idx => handleNewRPeak(idx));
+
+
     }
     useEffect(() => {
         if (hrvMetrics && hrvMetrics.sampleCount >= 30) {
@@ -356,38 +350,77 @@ export default function EcgFullPanel() {
         }
     }, [showPQRST]);
 
+
+    // Call this for each detected R-peak (localSampleIndex = index in circular buffer)
+    const handleNewRPeak = React.useCallback((localSampleIndex: number) => {
+        const currentTotal = totalSamples.current ?? 0;
+
+        // Anchor start time if not set (prefer setting at stream start externally)
+        if (ECG_START_TIME.current === null) {
+            ECG_START_TIME.current = Date.now() - Math.round((currentTotal / SAMPLE_RATE) * 1000);
+        }
+
+        // Convert to absolute sample index
+        let absoluteSampleIndex: number;
+        if (currentTotal < NUM_POINTS) {
+            absoluteSampleIndex = localSampleIndex;
+        } else {
+            absoluteSampleIndex = currentTotal - NUM_POINTS + localSampleIndex;
+        }
+
+        if (absoluteSampleIndex < 0) return; // Defensive guard
+
+        const msSinceStart = (absoluteSampleIndex / SAMPLE_RATE) * 1000;
+        const timestamp = (ECG_START_TIME.current ?? Date.now()) + Math.round(msSinceStart);
+
+        // Future-sanity: ignore if timestamp far in future (clock/sync glitch)
+        if (timestamp - Date.now() > 2000) return;
+
+        // Refractory: ignore peaks too close
+        const last = lastAcceptedPeakRef.current;
+        if (last !== null && timestamp - last < REFRACTORY_MS) return;
+        lastAcceptedPeakRef.current = timestamp;
+
+        setRPeakTimestamps(prev => {
+            const merged = [...prev, timestamp];
+            return merged.slice(-RPEAK_BUFFER_SIZE);
+        });
+    }, [NUM_POINTS, SAMPLE_RATE, RPEAK_BUFFER_SIZE]);
+
+    // --- In your peak detection logic, call handleNewRPeak(idx) for each detected R-peak ---
+
+    // --- BPM calculation effect ---
     useEffect(() => {
         if (signalQuality === 'poor' || signalQuality === 'no-signal') {
             setBpmDisplay("-- BPM");
             return;
         }
-        if (rPeakBuffer.length >= RPEAK_BUFFER_SIZE) {
-            // Calculate RR intervals (ms)
-            const rrIntervals = [];
-            for (let i = 1; i < rPeakBuffer.length; i++) {
-                const rr = (rPeakBuffer[i] - rPeakBuffer[i - 1]) / SAMPLE_RATE * 1000;
-                // Only include physiologically plausible intervals
+
+        if (rPeakTimestamps.length >= 2) {
+            const rrIntervals: number[] = [];
+            for (let i = 1; i < rPeakTimestamps.length; i++) {
+                const rr = rPeakTimestamps[i] - rPeakTimestamps[i - 1];
                 if (rr >= 300 && rr <= 1500) rrIntervals.push(rr);
             }
-            // Calculate BPMs from RR intervals
-            const bpms = rrIntervals.map(rr => 60000 / rr);
-            // Filter out outlier BPMs
-            const validBpms = bpms.filter(bpm => bpm >= 40 && bpm <= 200);
-            // Calculate moving average BPM
-            const avgBpm = validBpms.length > 0
-                ? validBpms.reduce((a, b) => a + b, 0) / validBpms.length
-                : 0;
-            // Calculate median BPM
-            const sortedBPM = bpms.slice().sort((a, b) => a - b);
-            const mid = Math.floor(sortedBPM.length / 2);
-            const median = sortedBPM.length % 2 === 0
-                ? (sortedBPM[mid - 1] + sortedBPM[mid]) / 2
-                : sortedBPM[mid];
-            setBpmDisplay(median > 0 ? `${median.toFixed(0)} BPM` : "-- BPM");
+
+            if (rrIntervals.length === 0) {
+                setBpmDisplay("-- BPM");
+                return;
+            }
+
+            const sorted = [...rrIntervals].sort((a, b) => a - b);
+            let trimmed = sorted;
+            if (sorted.length >= 5) {
+                const trim = Math.floor(sorted.length * 0.1);
+                trimmed = sorted.slice(trim, sorted.length - trim);
+            }
+            const avgRR = trimmed.reduce((s, v) => s + v, 0) / trimmed.length;
+            const bpm = Math.round(60000 / avgRR);
+            setBpmDisplay(`${bpm} BPM`);
         } else {
             setBpmDisplay("-- BPM");
         }
-    }, [rPeakBuffer, signalQuality]);
+    }, [rPeakTimestamps, signalQuality]);
 
     useEffect(() => {
         const timerInterval = setInterval(() => {
