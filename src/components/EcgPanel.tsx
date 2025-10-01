@@ -49,7 +49,7 @@ export default function EcgFullPanel() {
     // Patient Info modal state
     const [showPatientInfo, setShowPatientInfo] = useState(false);
 
-    const BPM_AVG_WINDOW = 8; // Number of BPM values to average
+    const RPEAK_BUFFER_SIZE = 10; // Number of recent R-peaks to use for BPM calculation
     // Update this state for physiological state
     const [physioState, setPhysioState] = useState<{ state: string; confidence: number }>({
         state: "Analyzing",
@@ -357,7 +357,11 @@ export default function EcgFullPanel() {
     }, [showPQRST]);
 
     useEffect(() => {
-        if (rPeakBuffer.length >= BPM_AVG_WINDOW) {
+        if (signalQuality === 'poor' || signalQuality === 'no-signal') {
+            setBpmDisplay("-- BPM");
+            return;
+        }
+        if (rPeakBuffer.length >= RPEAK_BUFFER_SIZE) {
             // Calculate RR intervals (ms)
             const rrIntervals = [];
             for (let i = 1; i < rPeakBuffer.length; i++) {
@@ -383,7 +387,7 @@ export default function EcgFullPanel() {
         } else {
             setBpmDisplay("-- BPM");
         }
-    }, [rPeakBuffer]);
+    }, [rPeakBuffer, signalQuality]);
 
     useEffect(() => {
         const timerInterval = setInterval(() => {
@@ -408,7 +412,7 @@ export default function EcgFullPanel() {
                 setRPeakBuffer(prev => {
                     const lastPeak = prev.length > 0 ? prev[prev.length - 1] : -Infinity;
                     const next = [...prev, ...absolutePeaks.filter(idx => idx > lastPeak)];
-                    return next.slice(-BPM_AVG_WINDOW);
+                    return next.slice(-RPEAK_BUFFER_SIZE);
                 });
             }
         }, 1000);
@@ -1420,6 +1424,11 @@ export default function EcgFullPanel() {
                         >
                             ✕
                         </button>
+                    </div>
+
+                    {/* Add this line for user instruction */}
+                    <div className="mb-4 text-center text-xs text-yellow-300 font-semibold">
+                        Please stay still for accurate readings.
                     </div>
 
                     <div className="flex gap-4">
