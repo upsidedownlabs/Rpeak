@@ -212,12 +212,6 @@ export default function EcgFullPanel() {
                     rLine.setY(i, rLineRef.current?.getY(i) || 0);
                     sLine.setY(i, sLineRef.current?.getY(i) || 0);
                     tLine.setY(i, tLineRef.current?.getY(i) || 0);
-                } else {
-                    pLine.setY(i, 0);
-                    qLine.setY(i, 0);
-                    rLine.setY(i, 0);
-                    sLine.setY(i, 0);
-                    tLine.setY(i, 0);
                 }
             }
             wglp.update();
@@ -351,6 +345,21 @@ export default function EcgFullPanel() {
     }, [showPQRST]);
 
 
+    // Toggle PQRST line visibility without clearing their data
+    useEffect(() => {
+        const pqrstLines = [
+            pLineRef.current,
+            qLineRef.current,
+            rLineRef.current,
+            sLineRef.current,
+            tLineRef.current
+        ];
+        pqrstLines.forEach(line => {
+            if (!line) return;
+            line.color.a = showPQRST ? 1 : 0;
+        });
+    }, [showPQRST]);
+
     // Call this for each detected R-peak (localSampleIndex = index in circular buffer)
     const handleNewRPeak = React.useCallback((localSampleIndex: number) => {
         const currentTotal = totalSamples.current ?? 0;
@@ -390,9 +399,13 @@ export default function EcgFullPanel() {
     // --- In your peak detection logic, call handleNewRPeak(idx) for each detected R-peak ---
 
     // --- BPM calculation effect ---
+    const [smoothedBpm, setSmoothedBpm] = useState<number>(0);
+
     useEffect(() => {
         if (signalQuality === 'poor' || signalQuality === 'no-signal') {
             setBpmDisplay("-- BPM");
+            setSmoothedBpm(0);
+            console.log('BPM Display: -- (poor/no signal)');
             return;
         }
 
@@ -405,6 +418,8 @@ export default function EcgFullPanel() {
 
             if (rrIntervals.length === 0) {
                 setBpmDisplay("-- BPM");
+                setSmoothedBpm(0);
+                console.log('BPM Display: -- (no valid RR intervals)');
                 return;
             }
 
@@ -417,12 +432,17 @@ export default function EcgFullPanel() {
             const avgRR = trimmed.reduce((s, v) => s + v, 0) / trimmed.length;
             const bpm = Math.round(60000 / avgRR);
             setBpmDisplay(`${bpm} BPM`);
+            setSmoothedBpm(bpm);
+            console.log(`BPM Display: ${bpm} (smoothed over ${rrIntervals.length} beats, avgRR: ${avgRR.toFixed(0)}ms)`);
         } else {
             setBpmDisplay("-- BPM");
+            setSmoothedBpm(0);
+            console.log('BPM Display: -- (need at least 2 R-peaks)');
         }
     }, [rPeakTimestamps, signalQuality]);
 
     useEffect(() => {
+        // Timer update (1 second)
         const timerInterval = setInterval(() => {
             if (startTime) {
                 const elapsed = Math.floor((Date.now() - startTime) / 1000);
@@ -430,26 +450,19 @@ export default function EcgFullPanel() {
                 const sec = String(elapsed % 60).padStart(2, "0");
                 setTimer(`${min}:${sec}`);
             }
-
-            if (connected) {
-                // Detect R-peaks
-                const pqrstPointsArr = pqrstDetector.current.detectDirectWaves(dataCh0.current);
-                const detectedPeaks = pqrstPointsArr.filter(p => p.type === 'R').map(p => p.index);
-                const currentTotal = totalSamples.current;
-                const absolutePeaks = detectedPeaks.map(idx => {
-                    if (currentTotal < NUM_POINTS) return idx;
-                    return currentTotal - NUM_POINTS + idx;
-                });
-
-                // Update moving buffer with absolute sample counts
-                setRPeakBuffer(prev => {
-                    const lastPeak = prev.length > 0 ? prev[prev.length - 1] : -Infinity;
-                    const next = [...prev, ...absolutePeaks.filter(idx => idx > lastPeak)];
-                    return next.slice(-RPEAK_BUFFER_SIZE);
-                });
-            }
         }, 1000);
-        return () => clearInterval(timerInterval);
+
+        // Peak detection update (faster for PQRST responsiveness)
+        const peakInterval = setInterval(() => {
+            if (connected) {
+                updatePeaks();
+            }
+        }, 200); // 200ms = 5 times per second (balanced between performance and responsiveness)
+
+        return () => {
+            clearInterval(timerInterval);
+            clearInterval(peakInterval);
+        };
     }, [startTime, connected]);
 
     // Add effect to set gender
@@ -517,8 +530,8 @@ export default function EcgFullPanel() {
                         totalSamples.current += 1;
                     }
 
-                    // Call updatePeaks to refresh the PQRST points with each new data packet
-                    updatePeaks();
+                    // ❌ REMOVE THIS LINE - causing infinite loop
+                    // updatePeaks();
                 }
             });
 
@@ -1057,11 +1070,12 @@ export default function EcgFullPanel() {
                                         : 'bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30'
                                         }`}
                                     title={connected ? 'Connected' : 'Connect Device'}
+                                    aria-label={connected ? 'Connected' : 'Connect Device'}
                                 >
                                     <Bluetooth className="w-5 h-5" />
                                 </button>
                             </div>
-                            <div className="whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center">
+                            <div className="whitespace-nowrap hidden group-hover:flex items-center">
                                 <span className={`text-sm font-medium ${connected ? 'text-green-400' : 'text-blue-400'}`}>
                                     {connected ? 'Connected' : 'Connect Device'}
                                 </span>
@@ -1080,11 +1094,12 @@ export default function EcgFullPanel() {
                                         : 'bg-gray-500/20 text-gray-400 border border-gray-500/30 hover:bg-gray-500/30'
                                         }`}
                                     title={showPQRST ? 'Hide PQRST' : 'Show PQRST'}
+                                    aria-label={showPQRST ? 'Hide PQRST' : 'Show PQRST'}
                                 >
                                     <Activity className="w-5 h-5" />
                                 </button>
                             </div>
-                            <div className="whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center">
+                            <div className="whitespace-nowrap hidden group-hover:flex items-center">
                                 <span className={`text-sm font-medium ${showPQRST ? 'text-orange-400' : 'text-gray-400'}`}>
                                     {showPQRST ? 'Hide PQRST' : 'Show PQRST'}
                                 </span>
@@ -1103,13 +1118,14 @@ export default function EcgFullPanel() {
                                         : 'bg-gray-500/20 text-gray-400 border border-gray-500/30 hover:bg-gray-500/30'
                                         }`}
                                     title={showHRV ? 'Hide HRV' : 'Show HRV'}
+                                    aria-label={showHRV ? 'Hide HRV Analysis' : 'Show HRV Analysis'}
                                 >
                                     <TrendingUp className="w-5 h-5" />
                                 </button>
                             </div>
-                            <div className="whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center">
+                            <div className="whitespace-nowrap hidden group-hover:flex items-center">
                                 <span className={`text-sm font-medium ${showHRV ? 'text-purple-400' : 'text-gray-400'}`}>
-                                    {showHRV ? 'Hide HRV' : 'Show HRV'}
+                                    {showHRV ? 'Hide HRV' : 'Show HRV Analysis'}
                                 </span>
                             </div>
                         </div>
@@ -1122,95 +1138,72 @@ export default function EcgFullPanel() {
                                 <button
                                     onClick={() => setShowIntervals(!showIntervals)}
                                     className={`w-10 h-10 flex items-center justify-center rounded-full transition-all ${showIntervals
-                                        ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30'
+                                        ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/30'
                                         : 'bg-gray-500/20 text-gray-400 border border-gray-500/30 hover:bg-gray-500/30'
                                         }`}
                                     title={showIntervals ? 'Hide Intervals' : 'Show Intervals'}
+                                    aria-label={showIntervals ? 'Hide Intervals' : 'Show Intervals'}
                                 >
                                     <Activity className="w-5 h-5" />
                                 </button>
                             </div>
-                            <div className="whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center">
-                                <span className={`text-sm font-medium ${showIntervals ? 'text-blue-400' : 'text-gray-400'}`}>
-                                    {showIntervals ? 'Hide Intervals' : 'Show Intervals'}
+                            <div className="whitespace-nowrap hidden group-hover:flex items-center">
+                                <span className={`text-sm font-medium ${showIntervals ? 'text-cyan-400' : 'text-gray-400'}`}>
+                                    {showIntervals ? 'Hide Intervals' : 'ECG Intervals'}
                                 </span>
                             </div>
                         </div>
                     </div>
 
-                    {/* Start/Stop Recording Button Group in Sidebar */}
+                    {/* Recording Button */}
                     <div className="relative w-full mb-5">
                         <div className="flex">
                             <div className="w-16 flex justify-center">
-                                {!isRecording ? (
-                                    <button
-                                        onClick={() => {
-                                            console.log("Button clicked, connected:", connected);
-                                            if (connected) {
-                                                setShowPatientInfo(true);
-                                                console.log("setShowPatientInfo called");
-                                            } else {
-                                                console.log("Device not connected");
-                                            }
-                                        }}
-                                        disabled={!connected}
-                                        className={`w-10 h-10 flex items-center justify-center rounded-full transition-all shadow-md
-                                        ${connected
-                                                ? 'bg-green-500/20 text-green-400 border border-green-500/30 hover:bg-green-500/30'
-                                                : 'bg-gray-500/20 text-gray-400 border border-gray-700 cursor-not-allowed'
-                                            }`}
-                                        title={connected ? "Start Recording" : "Connect device to record"}
-                                    >
-                                        <Play className="w-5 h-5" />
-                                    </button>
-                                ) : (
-                                    <button
-                                        onClick={stopRecording}
-                                        className="w-10 h-10 flex items-center justify-center rounded-full transition-all shadow-md
-                                     bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30"
-                                        title="Stop Recording"
-                                    >
-                                        <Square className="w-5 h-5" />
-                                    </button>
-                                )}
+                                <button
+                                    onClick={() => isRecording ? stopRecording() : setShowPatientInfo(true)}
+                                    disabled={!connected}
+                                    className={`w-10 h-10 flex items-center justify-center rounded-full transition-all ${
+                                        !connected ? 'bg-gray-500/20 text-gray-500 border border-gray-500/30 cursor-not-allowed' :
+                                        isRecording 
+                                            ? 'bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30 animate-pulse'
+                                            : 'bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30'
+                                    }`}
+                                    title={isRecording ? 'Stop Recording' : 'Start Recording'}
+                                    aria-label={isRecording ? 'Stop Recording' : 'Start Recording'}
+                                >
+                                    {isRecording ? <Square className="w-5 h-5" /> : <Play className="w-5 h-5" />}
+                                </button>
                             </div>
-                            <div className="flex items-center gap-2 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                                <span className={`text-sm font-medium ${!isRecording ? (connected ? 'text-green-400' : 'text-gray-400') : 'text-red-400'}`}>
-                                    {!isRecording ? "Start Recording" : "Stop Recording"}
+                            <div className="flex items-center gap-2 whitespace-nowrap hidden group-hover:flex">
+                                <span className={`text-sm font-medium ${isRecording ? 'text-red-400' : 'text-blue-400'}`}>
+                                    {isRecording ? 'Stop Recording' : 'Start Recording'}
                                 </span>
-
                             </div>
                         </div>
                     </div>
-
 
                     {/* AI Analysis Button */}
                     <div className="relative w-full mb-5">
                         <div className="flex">
                             <div className="w-16 flex justify-center">
                                 <button
-                                    onClick={() => {
-                                        setShowAIAnalysis((prev) => {
-                                            const next = !prev;
-                                            // Always try to analyze if opening panel and model is loaded
-                                            if (next && modelLoaded) {
-                                                AianalyzeCurrent();
-                                            }
-                                            return next;
-                                        });
-                                    }}
-                                    className={`w-10 h-10 flex items-center justify-center rounded-full transition-all ${showAIAnalysis
-                                        ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 hover:bg-yellow-500/30'
-                                        : 'bg-gray-500/20 text-gray-400 border border-gray-500/30 hover:bg-gray-500/30'
-                                        }`}
+                                    onClick={() => setShowAIAnalysis(!showAIAnalysis)}
+                                    disabled={!modelLoaded}
+                                    className={`w-10 h-10 flex items-center justify-center rounded-full transition-all ${
+                                        !modelLoaded ? 'bg-gray-500/20 text-gray-500 border border-gray-500/30 cursor-not-allowed' :
+                                        showAIAnalysis
+                                            ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 hover:bg-yellow-500/30'
+                                            : 'bg-gray-500/20 text-gray-400 border border-gray-500/30 hover:bg-gray-500/30'
+                                    }`}
                                     title={showAIAnalysis ? 'Hide AI Analysis' : 'Show AI Analysis'}
+                                    aria-label={showAIAnalysis ? 'Hide AI Analysis' : 'Show AI Analysis'}
                                 >
                                     <Zap className="w-5 h-5" />
                                 </button>
                             </div>
-                            <div className="whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center">
+                            <div className="whitespace-nowrap hidden group-hover:flex items-center">
                                 <span className={`text-sm font-medium ${showAIAnalysis ? 'text-yellow-400' : 'text-gray-400'}`}>
-                                    {showAIAnalysis ? 'Hide AI Analysis' : 'Show AI Analysis'}
+                                    {showAIAnalysis ? 'Hide AI Analysis' : 'AI Beat Analysis'}
                                 </span>
                             </div>
                         </div>
@@ -1472,33 +1465,6 @@ export default function EcgFullPanel() {
                                 This panel analyzes your heartbeat timing patterns. These measurements can reveal important information about heart health.
                             </p>
 
-                            {/* Gender selector with explanation */}
-                            <div className="mb-4">
-                                <p className="text-sm text-gray-300 mb-2">
-                                    Select your gender (affects normal ranges):
-                                </p>
-                                <div className="flex gap-2">
-                                    <button
-                                        onClick={() => setGender('male')}
-                                        className={`flex-1 py-2 rounded-lg text-sm ${gender === 'male'
-                                            ? 'bg-blue-500/30 border border-blue-500/60 text-blue-400'
-                                            : 'bg-gray-800/50 border border-gray-700 text-gray-400'
-                                            }`}
-                                    >
-                                        Male
-                                    </button>
-                                    <button
-                                        onClick={() => setGender('female')}
-                                        className={`flex-1 py-2 rounded-lg text-sm ${gender === 'female'
-                                            ? 'bg-pink-500/30 border border-pink-500/60 text-pink-400'
-                                            : 'bg-gray-800/50 border border-gray-700 text-gray-400'
-                                            }`}
-                                    >
-                                        Female
-                                    </button>
-                                </div>
-                            </div>
-
                             {/* Disclaimer */}
                             <div className="mt-auto pt-4 text-xs text-gray-500 italic">
                                 This is not a medical device. Do not use for diagnosis or treatment decisions.
@@ -1517,30 +1483,13 @@ export default function EcgFullPanel() {
                                     <div className="p-3 rounded-lg border border-white/20 bg-black/40 mb-4">
                                         <div className="flex items-center justify-between">
                                             <span className="text-gray-300">Heart Rate:</span>
-                                            <span className={`font-mono font-bold text-xl ${ecgIntervals?.status.bpm === 'normal' ? 'text-green-400' :
-                                                ecgIntervals?.status.bpm === 'bradycardia' ? 'text-yellow-400' :
-                                                    ecgIntervals?.status.bpm === 'tachycardia' ? 'text-red-400' : 'text-gray-400'
-                                                }`}>
-                                                {
-                                                    ecgIntervals?.bpm > 0
-                                                        ? ecgIntervals.bpm.toFixed(0)
-                                                        : (() => {
-                                                            // Use your actual R-peak indices array here
-                                                            const rPeaks = pqrstPoints.current.filter(p => p.type === "R").map(p => p.index);
-                                                            if (rPeaks && rPeaks.length >= 2) {
-                                                                const rrIntervals = [];
-                                                                for (let i = 1; i < rPeaks.length; i++) {
-                                                                    const rr = (rPeaks[i] - rPeaks[i - 1]) / SAMPLE_RATE * 1000;
-                                                                    if (rr >= 300 && rr <= 2000) rrIntervals.push(rr);
-                                                                }
-                                                                const avgRR = rrIntervals.length > 0
-                                                                    ? rrIntervals.reduce((a, b) => a + b, 0) / rrIntervals.length
-                                                                    : 0;
-                                                                return avgRR > 0 ? (60000 / avgRR).toFixed(1) : "--";
-                                                            }
-                                                            return "--";
-                                                        })()
-                                                } BPM
+                                            <span className={`font-mono font-bold text-xl ${
+                                                smoothedBpm === 0 ? 'text-gray-400' :
+                                                smoothedBpm >= 60 && smoothedBpm <= 100 ? 'text-green-400' :
+                                                smoothedBpm < 60 ? 'text-yellow-400' :
+                                                'text-red-400'
+                                            }`}>
+                                                {smoothedBpm > 0 ? smoothedBpm.toFixed(0) : "--"} BPM
                                             </span>
                                         </div>
                                         <div className="text-xs text-gray-400 mt-1">
