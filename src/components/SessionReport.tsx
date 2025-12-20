@@ -253,7 +253,7 @@ export default function SessionReport({
                                     </div>
 
                                     {/* Right Column - Analysis Insights */}
-                                    <div className="space-y-3">
+                                    <div className="space-y-1">
 
 
                                         {/* AI Analysis Quality Metrics */}

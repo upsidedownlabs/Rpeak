@@ -36,19 +36,25 @@ export class ECGIntervalCalculator {
    * @returns ECG intervals or null if not enough points
    */
   calculateIntervals(pqrstPoints: PQRSTPoint[]): ECGIntervals | null {
+    console.log(`[calculateIntervals] received ${pqrstPoints.length} points: ${pqrstPoints.map(p => `${p.type}@${p.absolutePosition}`).join(', ')}`);
+    
     // Group points by their PQRST complex
     const complexes = this.groupIntoComplexes(pqrstPoints);
+    console.log(`[calculateIntervals] grouped into ${complexes.length} complexes`);
     
     // Need at least one complete complex to calculate intervals
     if (complexes.length < 1) {
+      console.log(`[calculateIntervals] ERROR: no complexes, returning null`);
       return this.lastIntervals;
     }
     
     // Use the most recent complex for calculations
     const latestComplex = complexes[complexes.length - 1];
+    console.log(`[calculateIntervals] latest complex has ${latestComplex.length} points`);
     
     // Check if complex has all required points
     if (!this.isCompleteComplex(latestComplex)) {
+      console.log(`[calculateIntervals] WARNING: complex incomplete, returning previous intervals`);
       return this.lastIntervals;
     }
     
@@ -75,19 +81,19 @@ export class ECGIntervalCalculator {
     // Calculate PR interval
     const pPoint = this.findPointByType(latestComplex, 'P');
     const qPoint = this.findPointByType(latestComplex, 'Q');
-    const prInterval = (pPoint && qPoint) ? 
-      ((qPoint.index - pPoint.index) / this.sampleRate) * 1000 : 0;
+    const prDiff = (pPoint && qPoint) ? (qPoint.absolutePosition - pPoint.absolutePosition) : 0;
+    const prInterval = prDiff > 0 ? (prDiff / this.sampleRate) * 1000 : 0;
     
     // Calculate QRS duration
     const qPoint2 = this.findPointByType(latestComplex, 'Q');
     const sPoint = this.findPointByType(latestComplex, 'S');
-    const qrsDuration = (qPoint2 && sPoint) ? 
-      ((sPoint.index - qPoint2.index) / this.sampleRate) * 1000 : 0;
+    const qrsDiff = (qPoint2 && sPoint) ? (sPoint.absolutePosition - qPoint2.absolutePosition) : 0;
+    const qrsDuration = qrsDiff > 0 ? (qrsDiff / this.sampleRate) * 1000 : 0;
     
     // Calculate QT interval
     const tPoint = this.findPointByType(latestComplex, 'T');
-    const qtInterval = (qPoint2 && tPoint) ? 
-      ((tPoint.index - qPoint2.index) / this.sampleRate) * 1000 : 0;
+    const qtDiff = (qPoint2 && tPoint) ? (tPoint.absolutePosition - qPoint2.absolutePosition) : 0;
+    const qtInterval = qtDiff > 0 ? (qtDiff / this.sampleRate) * 1000 : 0;
     
     // If RR interval isn't available, try to get it from BPM
     if (rrInterval < 100 && bpm > 0) {

@@ -5,6 +5,7 @@ import { PanTompkinsDetector } from './panTompkinsDetector';
 import { RecordingSession, PatientInfo } from '../components/SessionRecording';
 import { AAMI_CLASSES, zscoreNorm } from './modelTrainer';
 import { loadECGModel, loadTensorFlow } from './tfLoader';
+import { detectRPeaksECG } from './rPeakDetector';
 
 export type SessionAnalysisResults = {
     summary: {
@@ -157,18 +158,104 @@ export class SessionAnalyzer {
 
         this.intervalCalculator.setGender(patientInfo.gender);
 
-        // 1. Detect R-peaks
-        const rPoints = this.pqrstDetector.detectDirectWaves(ecgData).filter(pt => pt.type === 'R');
-        const peaks = rPoints.map(pt => pt.index);
+        // 1. Detect R-peaks using the shared detector (consistent with live panel)
+        console.log(`[sessionAnalyzer] analyzing: ecgData.length=${ecgData.length}, sampleRate=${sampleRate}, duration=${duration}`);
+        let peaks = detectRPeaksECG(ecgData, sampleRate, { adaptiveThreshold: true });
+        console.log(`[sessionAnalyzer] shared detector returned ${peaks.length} peaks`);
+        
+        // Fallback: use session-provided peaks if detector yields none
+        if ((!peaks || peaks.length === 0) && session.rPeaks && session.rPeaks.length > 0) {
+            console.log(`[sessionAnalyzer] fallback to session.rPeaks: ${session.rPeaks.length} peaks`);
+            peaks = session.rPeaks.slice();
+        }
+        console.log(`[sessionAnalyzer] final peaks before check: ${peaks.length}`);
 
-
-        // 2. Detect PQRST waves
+        // 2. Detect PQRST waves (use peaks found above)
         const pqrstPoints = this.pqrstDetector.detectWaves(ecgData, peaks, 0);
 
         // 3. Calculate ECG intervals
         intervals = session.intervals || this.intervalCalculator.calculateIntervals(pqrstPoints);
 
-        // 4. Calculate HRV metrics
+        // If we don't have at least 2 beats, return an 'insufficient data' summary
+        if (!peaks || peaks.length < 2) {
+            console.log(`[sessionAnalyzer] INSUFFICIENT BEATS: only ${peaks?.length || 0} peaks detected`);
+            const heartRates = this.calculateHeartRateStats(peaks, sampleRate, duration);
+            const stSegmentData = { deviation: 0, status: 'unknown' };
+            const aiClassification = {
+                prediction: 'Insufficient Data',
+                confidence: 0,
+                explanation: 'Not enough beats were detected to compute HR/HRV reliably.'
+            };
+
+            return {
+                summary: {
+                    recordingDuration: this.formatDuration(duration),
+                    recordingDurationSeconds: duration,
+                    rPeaks: peaks,
+                    heartRate: {
+                        average: heartRates.average,
+                        min: heartRates.min,
+                        max: heartRates.max,
+                        status: 'unknown'
+                    },
+                    rhythm: {
+                        classification: aiClassification.prediction,
+                        confidence: aiClassification.confidence,
+                        irregularBeats: 0,
+                        percentIrregular: 0
+                    }
+                },
+                intervals: {
+                    pr: {
+                        average: intervals?.pr || 0,
+                        status: intervals?.status.pr || 'unknown'
+                    },
+                    qrs: {
+                        average: intervals?.qrs || 0,
+                        status: intervals?.status.qrs || 'unknown'
+                    },
+                    qt: {
+                        average: intervals?.qt || 0
+                    },
+                    qtc: {
+                        average: intervals?.qtc || 0,
+                        status: intervals?.status.qtc || 'unknown'
+                    },
+                    st: {
+                        deviation: stSegmentData.deviation,
+                        status: stSegmentData.status
+                    }
+                },
+                hrv: {
+                    timeMetrics: {
+                        rmssd: 0,
+                        sdnn: 0,
+                        pnn50: 0,
+                        triangularIndex: 0
+                    },
+                    frequencyMetrics: {
+                        lf: 0,
+                        hf: 0,
+                        lfhfRatio: 0
+                    },
+                    assessment: {
+                        status: 'Insufficient',
+                        description: 'Not enough beats for HRV analysis.'
+                    },
+                    physiologicalState: {
+                        state: 'Analyzing',
+                        confidence: 0
+                    }
+                },
+                aiClassification,
+                abnormalities: [],
+                recommendations: [
+                    'Record a longer session (≥30 seconds) to capture enough heartbeats for analysis.'
+                ]
+            };
+        }
+
+        // 4. Calculate HRV metrics (we have ≥2 peaks)
         this.hrvCalculator.extractRRFromPeaks(peaks, sampleRate);
         const hrvMetrics = this.hrvCalculator.getAllMetrics();
         const physioState = this.hrvCalculator.getPhysiologicalState();
@@ -741,16 +828,20 @@ export class SessionAnalyzer {
             const rr = (peaks[i] - peaks[i - 1]) * (1000 / sampleRate);
             rrIntervals.push(rr);
         }
+        console.log(`[calculateHeartRateStats] ${peaks.length} peaks, raw RR intervals (ms): ${rrIntervals.map(x => x.toFixed(1)).join(', ')}`);
 
         // Filter RR intervals to physiological range (300ms to 2000ms)
         const filteredRRs = rrIntervals.filter(rr => rr >= 300 && rr <= 2000);
+        console.log(`[calculateHeartRateStats] filtered RR intervals: ${filteredRRs.map(x => x.toFixed(1)).join(', ')} (kept ${filteredRRs.length}/${rrIntervals.length})`);
 
         if (filteredRRs.length === 0) {
+            console.log(`[calculateHeartRateStats] WARNING: no valid RR intervals, returning 0 BPM`);
             return { average: 0, min: 0, max: 0, median: 0 };
         }
 
         // Calculate BPM for each RR interval
         const bpms = filteredRRs.map(rr => 60000 / rr);
+        console.log(`[calculateHeartRateStats] calculated BPMs: ${bpms.map(x => x.toFixed(1)).join(', ')}`);
 
         // Mean, median, min, max BPM
         const average = bpms.reduce((a, b) => a + b, 0) / bpms.length;
@@ -758,6 +849,8 @@ export class SessionAnalyzer {
         const median = sortedBPM[Math.floor(sortedBPM.length / 2)];
         const min = Math.min(...bpms);
         const max = Math.max(...bpms);
+
+        console.log(`[calculateHeartRateStats] final result: avg=${average.toFixed(1)} BPM, min=${min.toFixed(1)}, max=${max.toFixed(1)}`);
 
         return {
             average: isNaN(average) ? 0 : average,
