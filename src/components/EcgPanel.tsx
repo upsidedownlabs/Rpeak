@@ -2,7 +2,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Bluetooth, Activity, Zap, TrendingUp, Play, Square, Clock } from "lucide-react";
 import { WebglPlot, WebglLine, ColorRGBA } from "webgl-plot";
-import { BPMCalculator } from '../lib/bpmCalculator';
 import { HighpassFilter, NotchFilter, LowpassFilter } from "../lib/filters";
 import { HRVCalculator } from '../lib/hrvCalculator';
 import { PQRSTDetector, PQRSTPoint } from '../lib/pqrstDetector';
@@ -65,7 +64,7 @@ export default function EcgFullPanel() {
     } | null>(null);
 
     // Auto Analyze state and toggle function
-    const [autoAnalyze, setAutoAnalyze] = useState(false);
+
     const wglpRef = useRef<WebglPlot | null>(null);
     const lineRef = useRef<WebglLine | null>(null);
     const dataCh0 = useRef(new Array(NUM_POINTS).fill(0));
@@ -75,7 +74,6 @@ export default function EcgFullPanel() {
     const highpass = useRef(new HighpassFilter()); // Updated filter for 360Hz
     const notch = useRef(new NotchFilter()); // Updated filter for 360Hz
     const ecg = useRef(new LowpassFilter()); // Updated filter for 360Hz
-    const bpmCalculator = useRef(new BPMCalculator(SAMPLE_RATE, 5, 40, 200));
     const hrvCalculator = useRef(new HRVCalculator());
     const pqrstDetector = useRef(new PQRSTDetector(SAMPLE_RATE));
     const pqrstPoints = useRef<PQRSTPoint[]>([]);
@@ -96,7 +94,6 @@ export default function EcgFullPanel() {
     const FLAT_SIGNAL_STD_THRESHOLD = 0.005;
     const recordBufferRef = useRef<number[]>([]);
     const [rPeakTimestamps, setRPeakTimestamps] = useState<number[]>([]);
-    const lastAcceptedPeakRef = useRef<number | null>(null);
     const lastAcceptedSampleRef = useRef<number | null>(null);
     const lastPQRSTStrRef = useRef<string>("");
     const recordingStartRef = useRef<number | null>(null);
@@ -154,64 +151,64 @@ export default function EcgFullPanel() {
 
             const wglp = new WebglPlot(canvas);
 
-        // Create ECG line (main signal) - updated for 1000 points
-        const line = new WebglLine(new ColorRGBA(0, 1, 0.2, 1), NUM_POINTS);
-        line.arrangeX();
+            // Create ECG line (main signal) - updated for 1000 points
+            const line = new WebglLine(new ColorRGBA(0, 1, 0.2, 1), NUM_POINTS);
+            line.arrangeX();
 
-        // Create PQRST lines - updated for 1000 points
-        const pLine = new WebglLine(new ColorRGBA(1, 0.7, 0, 1), NUM_POINTS); // Orange for P
-        pLine.arrangeX();
+            // Create PQRST lines - updated for 1000 points
+            const pLine = new WebglLine(new ColorRGBA(1, 0.7, 0, 1), NUM_POINTS); // Orange for P
+            pLine.arrangeX();
 
-        const qLine = new WebglLine(new ColorRGBA(0.2, 0.6, 1, 1), NUM_POINTS); // Blue for Q
-        qLine.arrangeX();
+            const qLine = new WebglLine(new ColorRGBA(0.2, 0.6, 1, 1), NUM_POINTS); // Blue for Q
+            qLine.arrangeX();
 
-        const rLine = new WebglLine(new ColorRGBA(1, 0, 0, 1), NUM_POINTS); // Red for R
-        rLine.arrangeX();
+            const rLine = new WebglLine(new ColorRGBA(1, 0, 0, 1), NUM_POINTS); // Red for R
+            rLine.arrangeX();
 
-        const sLine = new WebglLine(new ColorRGBA(0, 0.8, 1, 1), NUM_POINTS); // Cyan for S
-        sLine.arrangeX();
+            const sLine = new WebglLine(new ColorRGBA(0, 0.8, 1, 1), NUM_POINTS); // Cyan for S
+            sLine.arrangeX();
 
-        const tLine = new WebglLine(new ColorRGBA(0.8, 0.3, 1, 1), NUM_POINTS); // Purple for T
-        tLine.arrangeX();
+            const tLine = new WebglLine(new ColorRGBA(0.8, 0.3, 1, 1), NUM_POINTS); // Purple for T
+            tLine.arrangeX();
 
-        // Add all lines to the plot
-        wglp.addLine(line);
-        wglp.addLine(pLine);
-        wglp.addLine(qLine);
-        wglp.addLine(rLine);
-        wglp.addLine(sLine);
-        wglp.addLine(tLine);
+            // Add all lines to the plot
+            wglp.addLine(line);
+            wglp.addLine(pLine);
+            wglp.addLine(qLine);
+            wglp.addLine(rLine);
+            wglp.addLine(sLine);
+            wglp.addLine(tLine);
 
-        // Store references
-        wglpRef.current = wglp;
-        lineRef.current = line;
-        pLineRef.current = pLine;
-        qLineRef.current = qLine;
-        rLineRef.current = rLine;
-        sLineRef.current = sLine;
-        tLineRef.current = tLine;
+            // Store references
+            wglpRef.current = wglp;
+            lineRef.current = line;
+            pLineRef.current = pLine;
+            qLineRef.current = qLine;
+            rLineRef.current = rLine;
+            sLineRef.current = sLine;
+            tLineRef.current = tLine;
 
-        const render = () => {
-            requestAnimationFrame(render);
-            
-            // CRITICAL FIX #4: Don't redraw when no signal - saves GPU/CPU
-            if (!connected && totalSamples.current === 0) return;
-            
-            const scale = getScaleFactor();
-            for (let i = 0; i < NUM_POINTS; i++) {
-                line.setY(i, dataCh0.current[i] * scale);
+            const render = () => {
+                requestAnimationFrame(render);
 
-                // Update PQRST lines if visible
-                if (showPQRST) {
-                    pLine.setY(i, pLineRef.current?.getY(i) || 0);
-                    qLine.setY(i, qLineRef.current?.getY(i) || 0);
-                    rLine.setY(i, rLineRef.current?.getY(i) || 0);
-                    sLine.setY(i, sLineRef.current?.getY(i) || 0);
-                    tLine.setY(i, tLineRef.current?.getY(i) || 0);
+                // CRITICAL FIX #4: Don't redraw when no signal - saves GPU/CPU
+                if (!connected && totalSamples.current === 0) return;
+
+                const scale = getScaleFactor();
+                for (let i = 0; i < NUM_POINTS; i++) {
+                    line.setY(i, dataCh0.current[i] * scale);
+
+                    // Update PQRST lines if visible
+                    if (showPQRST) {
+                        pLine.setY(i, pLineRef.current?.getY(i) || 0);
+                        qLine.setY(i, qLineRef.current?.getY(i) || 0);
+                        rLine.setY(i, rLineRef.current?.getY(i) || 0);
+                        sLine.setY(i, sLineRef.current?.getY(i) || 0);
+                        tLine.setY(i, tLineRef.current?.getY(i) || 0);
+                    }
                 }
-            }
-            wglp.update();
-        };
+                wglp.update();
+            };
             render();
         };
 
@@ -251,7 +248,6 @@ export default function EcgFullPanel() {
 
         // Skip peak detection if the signal is too weak or too flat
         if (maxAbs < 0.05 || variance < 0.0002) {
-
             pqrstPoints.current = [];
             if (showPQRST) {
                 setVisiblePQRST([]);
@@ -261,19 +257,6 @@ export default function EcgFullPanel() {
 
         const pqrstPointsArr = pqrstDetector.current.detectDirectWaves(dataCh0.current);
         const peaks = pqrstPointsArr.filter(p => p.type === 'R').map(p => p.index);
-        console.log(`🔍 Peak Detection: Found ${peaks.length} R-peaks in buffer:`, peaks);
-
-
-        // Fall back to original algorithm if Pan-Tompkins doesn't find peaks
-        let usedPanTompkins = peaks.length > 0;
-
-        if (!usedPanTompkins) {
-
-            const originalPeaks = bpmCalculator.current.detectPeaks(dataCh0.current);
-            if (originalPeaks.length > 0) {
-                peaks.push(...originalPeaks);
-            }
-        }
 
         // Try to detect PQRST waves
         let pqrstDetected = false;
@@ -320,7 +303,6 @@ export default function EcgFullPanel() {
             .filter(idx => Number.isFinite(idx));
 
         // Now call handleNewRPeak for each detected absolute R-peak
-        console.log(`📍 Calling handleNewRPeak for ${absolutePeaks.length} peaks:`, absolutePeaks);
         absolutePeaks.forEach(idx => handleNewRPeak(idx));
 
         // Calculate ECG intervals when PQRST points are available
@@ -377,23 +359,18 @@ export default function EcgFullPanel() {
     // Call this for each detected R-peak (absoluteSampleIndex = absolute sample count when captured)
     const handleNewRPeak = React.useCallback((absoluteSampleIndex: number) => {
         const timeMs = (absoluteSampleIndex / SAMPLE_RATE) * 1000;
-        console.log(`🔵 handleNewRPeak called: absSample=${absoluteSampleIndex}, timeMs=${timeMs.toFixed(1)}`);
 
         // Refractory in samples to avoid duplicate counts from the sliding buffer
         const MIN_PEAK_SAMPLES = Math.floor((REFRACTORY_MS / 1000) * SAMPLE_RATE);
         const lastSample = lastAcceptedSampleRef.current;
         if (lastSample !== null && absoluteSampleIndex - lastSample < MIN_PEAK_SAMPLES) {
-            console.log(`❌ Rejected: too close to last peak in samples (${absoluteSampleIndex - lastSample} < ${MIN_PEAK_SAMPLES})`);
             return;
         }
         lastAcceptedSampleRef.current = absoluteSampleIndex;
-        lastAcceptedPeakRef.current = timeMs;
 
-        console.log(`✅ R-peak accepted: timeMs=${timeMs.toFixed(1)}`);
         setRPeakTimestamps(prev => {
             const merged = [...prev, timeMs];
             const result = merged.slice(-RPEAK_BUFFER_SIZE);
-            console.log(`📊 rPeakTimestamps updated: count=${result.length}, latest=${result[result.length-1]}`);
             return result;
         });
     }, [RPEAK_BUFFER_SIZE]);
@@ -406,20 +383,17 @@ export default function EcgFullPanel() {
     useEffect(() => {
         // Freeze updates when signal quality is poor
         if (signalQuality === 'poor') {
-            console.log('⏸️ BPM frozen: poor signal quality');
             return;
         }
 
         // If no signal, show placeholder but do not jitter
         if (signalQuality === 'no-signal') {
             setBpmDisplay("-- BPM");
-            console.log('❌ BPM Display: -- (no signal)');
             return;
         }
 
         // Require at least two beats to compute RR
         if (rPeakTimestamps.length < 2) {
-            console.log(`❌ BPM Display: -- (need >=2 R-peaks, have ${rPeakTimestamps.length})`);
             return;
         }
 
@@ -436,8 +410,8 @@ export default function EcgFullPanel() {
             const rr = rPeakTimestamps[i] - rPeakTimestamps[i - 1];
             if (rr >= 300 && rr <= 1500) rrIntervals.push(rr);
         }
+
         if (rrIntervals.length === 0) {
-            console.log('❌ BPM Display: -- (no valid RR intervals)');
             return;
         }
 
@@ -456,7 +430,6 @@ export default function EcgFullPanel() {
 
         setSmoothedBpm(next);
         setBpmDisplay(`${Math.round(next)} BPM`);
-        console.log(`✅ BPM Display: ${Math.round(next)} BPM (instant=${instantBpm.toFixed(1)}, smoothed=${next.toFixed(1)}, avgRR=${avgRR.toFixed(0)}ms)`);
     }, [rPeakTimestamps, signalQuality, smoothedBpm]);
 
     useEffect(() => {
@@ -486,13 +459,12 @@ export default function EcgFullPanel() {
 
         setModelLoading(true);
         try {
-            console.log('Loading ECG model (triggered by user intent)...');
             const model = await loadECGModel();
             setEcgModel(model);
             setModelLoaded(true);
-            console.log('ECG model loaded successfully');
+
         } catch (err) {
-            console.error('Failed to load model:', err);
+
             setModelLoaded(false);
             setEcgModel(null);
         } finally {
@@ -556,7 +528,6 @@ export default function EcgFullPanel() {
 
             setConnected(true);
             setStartTime(Date.now());
-            bpmCalculator.current.reset();
             hrvCalculator.current.reset();
             intervalCalculator.current.reset(); // Reset interval calculator
 
@@ -653,12 +624,7 @@ export default function EcgFullPanel() {
 
         // Use PQRSTDetector for peak detection
         const pqrstPointsArr = pqrstDetector.current.detectDirectWaves(dataCh0.current);
-        const detectedPeaks = pqrstPointsArr.filter(p => p.type === 'R').map(p => p.index);
-
-        // If PQRST fails, use backup method
-        const recentPeaks = detectedPeaks.length > 0
-            ? detectedPeaks
-            : bpmCalculator.current.detectPeaks(dataCh0.current);
+        const recentPeaks = pqrstPointsArr.filter(p => p.type === 'R').map(p => p.index);
 
 
         // Filter peaks to ensure physiological plausibility
@@ -819,13 +785,10 @@ export default function EcgFullPanel() {
 
             // Relaxed thresholds - allow lower amplitude signals through
             if (maxAbs < 0.05 || variance < 0.0001) {
-                console.log(`📡 Signal Quality: NO-SIGNAL (maxAbs=${maxAbs.toFixed(4)}, variance=${variance.toFixed(6)})`);
                 setSignalQuality('no-signal');
             } else if (maxAbs < 0.15 || variance < 0.003) {
-                console.log(`📡 Signal Quality: POOR (maxAbs=${maxAbs.toFixed(4)}, variance=${variance.toFixed(6)})`);
                 setSignalQuality('poor');
             } else {
-                console.log(`📡 Signal Quality: GOOD (maxAbs=${maxAbs.toFixed(4)}, variance=${variance.toFixed(6)})`);
                 setSignalQuality('good');
             }
         }, 1000);
@@ -1043,7 +1006,7 @@ export default function EcgFullPanel() {
         if (pendingStateUpdateRef.current) {
             clearTimeout(pendingStateUpdateRef.current);
         }
-        
+
         // Schedule update for 50ms from now
         pendingStateUpdateRef.current = setTimeout(() => {
             setVisiblePQRST(points);
@@ -1055,12 +1018,8 @@ export default function EcgFullPanel() {
             {/* Patient Info Modal (overlay, not in sidebar) */}
             {showPatientInfo && (
                 <SessionRecording
-                    connected={connected}
                     onStartRecording={startRecording}
-                    onStopRecording={stopRecording}
-                    isRecording={isRecording}
-                    recordingTime={recordingTime}
-                    onClose={() => setShowPatientInfo(false)} // ✅ Use a stable callback
+                    onClose={() => setShowPatientInfo(false)}
                 />
             )}
             {showSessionReport && sessionResults && (
@@ -1106,8 +1065,8 @@ export default function EcgFullPanel() {
                                     onClick={connected ? undefined : connect}
                                     className={`w-10 h-10 flex items-center justify-center rounded-full 
                                                 ${connected
-                                        ? 'bg-green-500/20 text-green-400 border border-green-500/30 cursor-not-allowed'
-                                        : 'bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30'
+                                            ? 'bg-green-500/20 text-green-400 border border-green-500/30 cursor-not-allowed'
+                                            : 'bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30'
                                         }`}
                                     title={connected ? 'Connected' : 'Connect Device'}
                                     aria-label={connected ? 'Connected' : 'Connect Device'}
@@ -1131,8 +1090,8 @@ export default function EcgFullPanel() {
                                     onClick={() => setShowPQRST(!showPQRST)}
                                     className={`w-10 h-10 flex items-center justify-center rounded-full 
                                                 ${showPQRST
-                                        ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30 hover:bg-orange-500/30'
-                                        : 'bg-gray-500/20 text-gray-400 border border-gray-500/30 hover:bg-gray-500/30'
+                                            ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30 hover:bg-orange-500/30'
+                                            : 'bg-gray-500/20 text-gray-400 border border-gray-500/30 hover:bg-gray-500/30'
                                         }`}
                                     title={showPQRST ? 'Hide PQRST' : 'Show PQRST'}
                                     aria-label={showPQRST ? 'Hide PQRST' : 'Show PQRST'}
@@ -1156,8 +1115,8 @@ export default function EcgFullPanel() {
                                     onClick={() => setShowHRV(!showHRV)}
                                     className={`w-10 h-10 flex items-center justify-center rounded-full 
                                                 ${showHRV
-                                        ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30 hover:bg-purple-500/30'
-                                        : 'bg-gray-500/20 text-gray-400 border border-gray-500/30 hover:bg-gray-500/30'
+                                            ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30 hover:bg-purple-500/30'
+                                            : 'bg-gray-500/20 text-gray-400 border border-gray-500/30 hover:bg-gray-500/30'
                                         }`}
                                     title={showHRV ? 'Hide HRV' : 'Show HRV'}
                                     aria-label={showHRV ? 'Hide HRV Analysis' : 'Show HRV Analysis'}
@@ -1181,8 +1140,8 @@ export default function EcgFullPanel() {
                                     onClick={() => setShowIntervals(!showIntervals)}
                                     className={`w-10 h-10 flex items-center justify-center rounded-full 
                                                 ${showIntervals
-                                        ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/30'
-                                        : 'bg-gray-500/20 text-gray-400 border border-gray-500/30 hover:bg-gray-500/30'
+                                            ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/30'
+                                            : 'bg-gray-500/20 text-gray-400 border border-gray-500/30 hover:bg-gray-500/30'
                                         }`}
                                     title={showIntervals ? 'Hide Intervals' : 'Show Intervals'}
                                     aria-label={showIntervals ? 'Hide Intervals' : 'Show Intervals'}
@@ -1207,10 +1166,10 @@ export default function EcgFullPanel() {
                                     disabled={!connected}
                                     className={`w-10 h-10 flex items-center justify-center rounded-full 
                                                 ${!connected ? 'bg-gray-500/20 text-gray-500 border border-gray-500/30 cursor-not-allowed' :
-                                                isRecording 
-                                                    ? 'bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30 animate-pulse'
-                                                    : 'bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30'
-                                                }`}
+                                            isRecording
+                                                ? 'bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30 animate-pulse'
+                                                : 'bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30'
+                                        }`}
                                     title={isRecording ? 'Stop Recording' : 'Start Recording'}
                                     aria-label={isRecording ? 'Stop Recording' : 'Start Recording'}
                                 >
@@ -1234,10 +1193,10 @@ export default function EcgFullPanel() {
                                     disabled={modelLoading}
                                     className={`w-10 h-10 flex items-center justify-center rounded-full 
                                                 ${modelLoading ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30 cursor-wait' :
-                                                showAIAnalysis
-                                                    ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 hover:bg-yellow-500/30'
-                                                    : 'bg-gray-500/20 text-gray-400 border border-gray-500/30 hover:bg-gray-500/30'
-                                                }`}
+                                            showAIAnalysis
+                                                ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 hover:bg-yellow-500/30'
+                                                : 'bg-gray-500/20 text-gray-400 border border-gray-500/30 hover:bg-gray-500/30'
+                                        }`}
                                     title={modelLoading ? 'Loading model...' : showAIAnalysis ? 'Hide AI Analysis' : 'Show AI Analysis'}
                                     aria-label={modelLoading ? 'Loading model...' : showAIAnalysis ? 'Hide AI Analysis' : 'Show AI Analysis'}
                                 >
@@ -1526,12 +1485,11 @@ export default function EcgFullPanel() {
                                     <div className="p-3 rounded-lg border border-white/20 bg-black/40 mb-4">
                                         <div className="flex items-center justify-between">
                                             <span className="text-gray-300">Heart Rate:</span>
-                                            <span className={`font-mono font-bold text-xl ${
-                                                smoothedBpm === 0 ? 'text-gray-400' :
-                                                smoothedBpm >= 60 && smoothedBpm <= 100 ? 'text-green-400' :
-                                                smoothedBpm < 60 ? 'text-yellow-400' :
-                                                'text-red-400'
-                                            }`}>
+                                            <span className={`font-mono font-bold text-xl ${smoothedBpm === 0 ? 'text-gray-400' :
+                                                    smoothedBpm >= 60 && smoothedBpm <= 100 ? 'text-green-400' :
+                                                        smoothedBpm < 60 ? 'text-yellow-400' :
+                                                            'text-red-400'
+                                                }`}>
                                                 {smoothedBpm > 0 ? smoothedBpm.toFixed(0) : "--"} BPM
                                             </span>
                                         </div>
@@ -1657,7 +1615,7 @@ export default function EcgFullPanel() {
             )}
 
             {/* PQRST text labels overlay - updated for 1000 points */}
-            {showPQRST && visiblePQRST.length >  0 && (
+            {showPQRST && visiblePQRST.length > 0 && (
                 <div className="absolute inset-0 pointer-events-none">
                     {(() => {
                         const scale = scaleFactorRef.current;
@@ -1667,10 +1625,10 @@ export default function EcgFullPanel() {
 
                             const colorClass =
                                 point.type === 'P' ? 'text-orange-400' :
-                                point.type === 'Q' ? 'text-blue-400' :
-                                point.type === 'R' ? 'text-red-500' :
-                                point.type === 'S' ? 'text-cyan-400' :
-                                point.type === 'T' ? 'text-purple-400' : 'text-white';
+                                    point.type === 'Q' ? 'text-blue-400' :
+                                        point.type === 'R' ? 'text-red-500' :
+                                            point.type === 'S' ? 'text-cyan-400' :
+                                                point.type === 'T' ? 'text-purple-400' : 'text-white';
 
                             return (
                                 <div

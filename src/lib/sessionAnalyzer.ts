@@ -124,22 +124,6 @@ export class SessionAnalyzer {
         // intervalCalculator is also stateless
     }
 
-    /**
-     * Returns the correct model path for both local and GitHub Pages deployments.
-     */
-    private getModelPath(): string {
-        // If running on GitHub Pages, the path should include the repo name.
-        if (typeof window !== "undefined") {
-            const path = window.location.pathname;
-            // Adjust 'Rpeak' to your actual repo name if different
-            if (path.startsWith('/Rpeak')) {
-                return '/Rpeak/models/beat-level-ecg-model.json';
-            }
-        }
-        // Default for local/dev
-        return 'models/beat-level-ecg-model.json';
-    }
-
     public async analyzeSession(session: RecordingSession): Promise<SessionAnalysisResults> {
         let intervals = session.intervals;
 
@@ -189,8 +173,8 @@ export class SessionAnalyzer {
         const hrvMetrics = this.hrvCalculator.getAllMetrics();
         const physioState = this.hrvCalculator.getPhysiologicalState();
 
-        // 5. Analyze ST segment
-        const stSegmentData = this.analyzeSTSegment(pqrstPoints);
+        // 5. ST segment analysis is performed in the recording panel; use safe default here
+        const stSegmentData = { deviation: 0, status: 'unknown' };
 
         // 6. Run AI classification using beat-level model
         const aiClassification = await this.runBeatLevelClassification(
@@ -281,42 +265,6 @@ export class SessionAnalyzer {
             aiClassification,
             abnormalities,
             recommendations
-        };
-    }
-
-    private analyzeSTSegment(pqrstPoints: any[]): { deviation: number; status: string } | null {
-        // Basic ST segment analysis
-        if (!pqrstPoints || pqrstPoints.length === 0) {
-            return null;
-        }
-
-        // Simplified ST analysis - in a real implementation, this would be more sophisticated
-        const stDeviations: number[] = [];
-
-        pqrstPoints.forEach(point => {
-            if (point.S && point.T) {
-                // Calculate ST segment deviation (simplified)
-                const stDeviation = point.T.amplitude - point.S.amplitude;
-                stDeviations.push(stDeviation);
-            }
-        });
-
-        if (stDeviations.length === 0) {
-            return { deviation: 0, status: 'unknown' };
-        }
-
-        const avgDeviation = stDeviations.reduce((sum, dev) => sum + dev, 0) / stDeviations.length;
-
-        let status = 'normal';
-        if (avgDeviation > 0.1) {
-            status = 'elevation';
-        } else if (avgDeviation < -0.1) {
-            status = 'depression';
-        }
-
-        return {
-            deviation: avgDeviation,
-            status: status
         };
     }
 
