@@ -7,7 +7,7 @@ import { HighpassFilter, NotchFilter, LowpassFilter } from "../lib/filters";
 import { HRVCalculator } from '../lib/hrvCalculator';
 import { PQRSTDetector, PQRSTPoint } from '../lib/pqrstDetector';
 import { ECGIntervalCalculator, ECGIntervals } from '../lib/ecgIntervals';
-import * as tf from "@tensorflow/tfjs";
+import { loadECGModel } from '../lib/tfLoader';
 import SessionRecording, { PatientInfo, RecordingSession } from './SessionRecording';
 import { SessionAnalyzer, SessionAnalysisResults } from '../lib/sessionAnalyzer';
 import SessionReport from './SessionReport';
@@ -28,8 +28,6 @@ export default function EcgFullPanel() {
     const [connected, setConnected] = useState(false);
     const [startTime, setStartTime] = useState<number | null>(null);
     const [bpmDisplay, setBpmDisplay] = useState("-- BPM");
-    const [peaksVisible, setPeaksVisible] = useState(true);
-    const [timer, setTimer] = useState("00:00");
     const [showHRV, setShowHRV] = useState(false);
     const [classLabels, setClassLabels] = useState<string[]>(AAMI_CLASSES);
     const [showPQRST, setShowPQRST] = useState(false);
@@ -38,14 +36,12 @@ export default function EcgFullPanel() {
 
     // Add these states to your component
     const [isRecording, setIsRecording] = useState(false);
-    const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null);
     const [recordingTime, setRecordingTime] = useState("00:00");
     const [recordedData, setRecordedData] = useState<number[]>([]);
     const [currentSession, setCurrentSession] = useState<RecordingSession | null>(null);
     const [sessionResults, setSessionResults] = useState<SessionAnalysisResults | null>(null);
     const [showSessionReport, setShowSessionReport] = useState(false);
     const sessionAnalyzer = useRef(new SessionAnalyzer(SAMPLE_RATE));
-    const [rPeakBuffer, setRPeakBuffer] = useState<number[]>([]);
     // Patient Info modal state
     const [showPatientInfo, setShowPatientInfo] = useState(false);
 
@@ -61,7 +57,8 @@ export default function EcgFullPanel() {
     const [gender, setGender] = useState<'male' | 'female'>('male');
 
     const [modelLoaded, setModelLoaded] = useState(false);
-    const [ecgModel, setEcgModel] = useState<tf.LayersModel | null>(null);
+    const [modelLoading, setModelLoading] = useState(false);
+    const [ecgModel, setEcgModel] = useState<any | null>(null);
     const [modelPrediction, setModelPrediction] = useState<{
         prediction: string;
         confidence: number;
@@ -72,7 +69,7 @@ export default function EcgFullPanel() {
     const wglpRef = useRef<WebglPlot | null>(null);
     const lineRef = useRef<WebglLine | null>(null);
     const dataCh0 = useRef(new Array(NUM_POINTS).fill(0));
-    const peakData = useRef(new Array(NUM_POINTS).fill(0));
+    const absoluteSampleIndexBuffer = useRef<number[]>(new Array(NUM_POINTS).fill(0));
     const sampleIndex = useRef(0);
     const totalSamples = useRef(0);
     const highpass = useRef(new HighpassFilter()); // Updated filter for 360Hz
@@ -99,16 +96,16 @@ export default function EcgFullPanel() {
     const FLAT_SIGNAL_STD_THRESHOLD = 0.005;
     const recordBufferRef = useRef<number[]>([]);
     const [rPeakTimestamps, setRPeakTimestamps] = useState<number[]>([]);
-    const ECG_START_TIME = useRef<number | null>(null);
     const lastAcceptedPeakRef = useRef<number | null>(null);
-    const REFRACTORY_MS = 200; // ms
+    const lastAcceptedSampleRef = useRef<number | null>(null);
+    const lastPQRSTStrRef = useRef<string>("");
+    const recordingStartRef = useRef<number | null>(null);
+    const REFRACTORY_MS = 300; // Minimum RR gap to avoid duplicate counts (ms)
+    // Clinical-grade BPM display tuning
+    const BPM_SMOOTHING_ALPHA = 0.1; // 0.05–0.15; lower = more stable
+    const BPM_UPDATE_INTERVAL_MS = 1000; // 1 Hz display update
+    const lastBpmUpdateRef = useRef(0);
 
-    // Call this on connect/disconnect to reset timing state
-    const resetEcgTiming = React.useCallback(() => {
-        ECG_START_TIME.current = null;
-        lastAcceptedPeakRef.current = null;
-        setRPeakTimestamps([]);
-    }, []);
     type HRVMetrics = {
         sampleCount: number;
         assessment: {
@@ -134,6 +131,10 @@ export default function EcgFullPanel() {
         status: 'normal' | 'elevation' | 'depression';
     };
 
+    // CRITICAL FIX #2: Gate flag to freeze all intervals until user interacts
+    // Prevents main thread blocking that delays LCP by 190s
+    const appActive = connected || isRecording || showAIAnalysis || showHRV || showPQRST;
+
     useEffect(() => {
         if (typeof window !== "undefined") {
             const labels = JSON.parse(localStorage.getItem('ecg-class-labels') || 'null');
@@ -141,26 +142,17 @@ export default function EcgFullPanel() {
         }
     }, []);
 
-    // Effect to run AianalyzeCurrent automatically if autoAnalyze is enabled
-    useEffect(() => {
-        if (!autoAnalyze) return;
-        if (!modelLoaded || !ecgIntervals) return;
-        const interval = setInterval(() => {
-            AianalyzeCurrent();
-        }, 60000); // 1 minute refresh
-        return () => clearInterval(interval);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [autoAnalyze, modelLoaded, ecgIntervals]);
-
-
     useEffect(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
-        const dpr = window.devicePixelRatio || 1;
-        canvas.width = canvas.clientWidth * dpr;
-        canvas.height = canvas.clientHeight * dpr;
 
-        const wglp = new WebglPlot(canvas);
+        // CRITICAL FIX #3: Defer WebGL init to allow LCP to paint first
+        const initWebGL = () => {
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = canvas.clientWidth * dpr;
+            canvas.height = canvas.clientHeight * dpr;
+
+            const wglp = new WebglPlot(canvas);
 
         // Create ECG line (main signal) - updated for 1000 points
         const line = new WebglLine(new ColorRGBA(0, 1, 0.2, 1), NUM_POINTS);
@@ -201,6 +193,10 @@ export default function EcgFullPanel() {
 
         const render = () => {
             requestAnimationFrame(render);
+            
+            // CRITICAL FIX #4: Don't redraw when no signal - saves GPU/CPU
+            if (!connected && totalSamples.current === 0) return;
+            
             const scale = getScaleFactor();
             for (let i = 0; i < NUM_POINTS; i++) {
                 line.setY(i, dataCh0.current[i] * scale);
@@ -216,17 +212,36 @@ export default function EcgFullPanel() {
             }
             wglp.update();
         };
-        render();
-    }, [peaksVisible, showPQRST]);
+            render();
+        };
+
+        // Use requestIdleCallback to defer WebGL init until browser is idle
+        const idleCallbackId = requestIdleCallback(initWebGL, { timeout: 2000 });
+
+        return () => cancelIdleCallback(idleCallbackId);
+    }, [showPQRST]);
 
     function getScaleFactor() {
-        // Defensive: avoid division by zero and extreme scaling
-        const maxAbs = Math.max(...dataCh0.current.map(Math.abs), 0.1);
-        let scale = maxAbs > 0.9 ? 0.9 / maxAbs : 1;
-        // Clamp scale factor to [0.5, 1] for UI stability
-        scale = Math.max(0.5, Math.min(scale, 1));
-        return scale;
+        // Now just returns cached value - O(1) instead of O(1000)
+        return scaleFactorRef.current;
     }
+
+    const scaleFactorRef = useRef(1);
+
+    // ADD NEW useEffect around line 470:
+    useEffect(() => {
+        if (!appActive) return; // CRITICAL: Don't run when idle
+
+        const scaleInterval = setInterval(() => {
+            // Calculate scale factor ONCE per 100ms instead of per render
+            const maxAbs = Math.max(...dataCh0.current.map(Math.abs), 0.1);
+            let scale = maxAbs > 0.9 ? 0.9 / maxAbs : 1;
+            scale = Math.max(0.5, Math.min(scale, 1));
+            scaleFactorRef.current = scale;
+        }, 100); // Background update - doesn't block renders
+
+        return () => clearInterval(scaleInterval);
+    }, [appActive]);
 
     function updatePeaks() {
         // Add debug for signal diagnostics
@@ -246,6 +261,7 @@ export default function EcgFullPanel() {
 
         const pqrstPointsArr = pqrstDetector.current.detectDirectWaves(dataCh0.current);
         const peaks = pqrstPointsArr.filter(p => p.type === 'R').map(p => p.index);
+        console.log(`🔍 Peak Detection: Found ${peaks.length} R-peaks in buffer:`, peaks);
 
 
         // Fall back to original algorithm if Pan-Tompkins doesn't find peaks
@@ -259,9 +275,6 @@ export default function EcgFullPanel() {
             }
         }
 
-        // Generate visualization (same as before)
-        peakData.current = bpmCalculator.current.generatePeakVisualization(dataCh0.current, peaks);
-
         // Try to detect PQRST waves
         let pqrstDetected = false;
 
@@ -271,7 +284,7 @@ export default function EcgFullPanel() {
             pqrstDetected = pqrstPoints.current.length > 0;
 
             if (showPQRST) {
-                setVisiblePQRST([...pqrstPoints.current]);
+                debouncedSetVisiblePQRST([...pqrstPoints.current]);
             }
         }
 
@@ -291,7 +304,8 @@ export default function EcgFullPanel() {
             hrvCalculator.current.extractRRFromPeaks(peaks, SAMPLE_RATE);
             const metrics = hrvCalculator.current.getAllMetrics();
             setHrvMetrics(prev => {
-                if (!prev || JSON.stringify(prev) !== JSON.stringify(metrics)) {
+                // Efficient comparison: check sampleCount instead of deep JSON.stringify
+                if (!prev || prev.sampleCount !== metrics.sampleCount) {
                     return metrics;
                 }
                 return prev;
@@ -299,6 +313,15 @@ export default function EcgFullPanel() {
         } else {
             setHrvMetrics(null);
         }
+
+        // IMPORTANT: Process R-peaks for BPM calculation BEFORE early return
+        const absolutePeaks = peaks
+            .map(idx => absoluteSampleIndexBuffer.current[idx])
+            .filter(idx => Number.isFinite(idx));
+
+        // Now call handleNewRPeak for each detected absolute R-peak
+        console.log(`📍 Calling handleNewRPeak for ${absolutePeaks.length} peaks:`, absolutePeaks);
+        absolutePeaks.forEach(idx => handleNewRPeak(idx));
 
         // Calculate ECG intervals when PQRST points are available
         if (pqrstPoints.current.length > 0) {
@@ -315,15 +338,6 @@ export default function EcgFullPanel() {
                 return; // <-- Only return if intervals are set
             }
         }
-        // Add this block to define absolutePeaks
-        const currentTotal = totalSamples.current;
-        const absolutePeaks = peaks.map(idx => {
-            if (currentTotal < NUM_POINTS) return idx;
-            return currentTotal - NUM_POINTS + idx;
-        });
-
-        // Now call handleNewRPeak for each detected absolute R-peak
-        absolutePeaks.forEach(idx => handleNewRPeak(idx));
 
 
     }
@@ -360,41 +374,29 @@ export default function EcgFullPanel() {
         });
     }, [showPQRST]);
 
-    // Call this for each detected R-peak (localSampleIndex = index in circular buffer)
-    const handleNewRPeak = React.useCallback((localSampleIndex: number) => {
-        const currentTotal = totalSamples.current ?? 0;
+    // Call this for each detected R-peak (absoluteSampleIndex = absolute sample count when captured)
+    const handleNewRPeak = React.useCallback((absoluteSampleIndex: number) => {
+        const timeMs = (absoluteSampleIndex / SAMPLE_RATE) * 1000;
+        console.log(`🔵 handleNewRPeak called: absSample=${absoluteSampleIndex}, timeMs=${timeMs.toFixed(1)}`);
 
-        // Anchor start time if not set (prefer setting at stream start externally)
-        if (ECG_START_TIME.current === null) {
-            ECG_START_TIME.current = Date.now() - Math.round((currentTotal / SAMPLE_RATE) * 1000);
+        // Refractory in samples to avoid duplicate counts from the sliding buffer
+        const MIN_PEAK_SAMPLES = Math.floor((REFRACTORY_MS / 1000) * SAMPLE_RATE);
+        const lastSample = lastAcceptedSampleRef.current;
+        if (lastSample !== null && absoluteSampleIndex - lastSample < MIN_PEAK_SAMPLES) {
+            console.log(`❌ Rejected: too close to last peak in samples (${absoluteSampleIndex - lastSample} < ${MIN_PEAK_SAMPLES})`);
+            return;
         }
+        lastAcceptedSampleRef.current = absoluteSampleIndex;
+        lastAcceptedPeakRef.current = timeMs;
 
-        // Convert to absolute sample index
-        let absoluteSampleIndex: number;
-        if (currentTotal < NUM_POINTS) {
-            absoluteSampleIndex = localSampleIndex;
-        } else {
-            absoluteSampleIndex = currentTotal - NUM_POINTS + localSampleIndex;
-        }
-
-        if (absoluteSampleIndex < 0) return; // Defensive guard
-
-        const msSinceStart = (absoluteSampleIndex / SAMPLE_RATE) * 1000;
-        const timestamp = (ECG_START_TIME.current ?? Date.now()) + Math.round(msSinceStart);
-
-        // Future-sanity: ignore if timestamp far in future (clock/sync glitch)
-        if (timestamp - Date.now() > 2000) return;
-
-        // Refractory: ignore peaks too close
-        const last = lastAcceptedPeakRef.current;
-        if (last !== null && timestamp - last < REFRACTORY_MS) return;
-        lastAcceptedPeakRef.current = timestamp;
-
+        console.log(`✅ R-peak accepted: timeMs=${timeMs.toFixed(1)}`);
         setRPeakTimestamps(prev => {
-            const merged = [...prev, timestamp];
-            return merged.slice(-RPEAK_BUFFER_SIZE);
+            const merged = [...prev, timeMs];
+            const result = merged.slice(-RPEAK_BUFFER_SIZE);
+            console.log(`📊 rPeakTimestamps updated: count=${result.length}, latest=${result[result.length-1]}`);
+            return result;
         });
-    }, [NUM_POINTS, SAMPLE_RATE, RPEAK_BUFFER_SIZE]);
+    }, [RPEAK_BUFFER_SIZE]);
 
     // --- In your peak detection logic, call handleNewRPeak(idx) for each detected R-peak ---
 
@@ -402,55 +404,63 @@ export default function EcgFullPanel() {
     const [smoothedBpm, setSmoothedBpm] = useState<number>(0);
 
     useEffect(() => {
-        if (signalQuality === 'poor' || signalQuality === 'no-signal') {
-            setBpmDisplay("-- BPM");
-            setSmoothedBpm(0);
-            console.log('BPM Display: -- (poor/no signal)');
+        // Freeze updates when signal quality is poor
+        if (signalQuality === 'poor') {
+            console.log('⏸️ BPM frozen: poor signal quality');
             return;
         }
 
-        if (rPeakTimestamps.length >= 2) {
-            const rrIntervals: number[] = [];
-            for (let i = 1; i < rPeakTimestamps.length; i++) {
-                const rr = rPeakTimestamps[i] - rPeakTimestamps[i - 1];
-                if (rr >= 300 && rr <= 1500) rrIntervals.push(rr);
-            }
-
-            if (rrIntervals.length === 0) {
-                setBpmDisplay("-- BPM");
-                setSmoothedBpm(0);
-                console.log('BPM Display: -- (no valid RR intervals)');
-                return;
-            }
-
-            const sorted = [...rrIntervals].sort((a, b) => a - b);
-            let trimmed = sorted;
-            if (sorted.length >= 5) {
-                const trim = Math.floor(sorted.length * 0.1);
-                trimmed = sorted.slice(trim, sorted.length - trim);
-            }
-            const avgRR = trimmed.reduce((s, v) => s + v, 0) / trimmed.length;
-            const bpm = Math.round(60000 / avgRR);
-            setBpmDisplay(`${bpm} BPM`);
-            setSmoothedBpm(bpm);
-            console.log(`BPM Display: ${bpm} (smoothed over ${rrIntervals.length} beats, avgRR: ${avgRR.toFixed(0)}ms)`);
-        } else {
+        // If no signal, show placeholder but do not jitter
+        if (signalQuality === 'no-signal') {
             setBpmDisplay("-- BPM");
-            setSmoothedBpm(0);
-            console.log('BPM Display: -- (need at least 2 R-peaks)');
+            console.log('❌ BPM Display: -- (no signal)');
+            return;
         }
-    }, [rPeakTimestamps, signalQuality]);
+
+        // Require at least two beats to compute RR
+        if (rPeakTimestamps.length < 2) {
+            console.log(`❌ BPM Display: -- (need >=2 R-peaks, have ${rPeakTimestamps.length})`);
+            return;
+        }
+
+        // Rate-limit visual updates to 1 Hz
+        const now = performance.now();
+        if (now - lastBpmUpdateRef.current < BPM_UPDATE_INTERVAL_MS) {
+            return;
+        }
+        lastBpmUpdateRef.current = now;
+
+        // Build RR intervals with physiologic bounds
+        const rrIntervals: number[] = [];
+        for (let i = 1; i < rPeakTimestamps.length; i++) {
+            const rr = rPeakTimestamps[i] - rPeakTimestamps[i - 1];
+            if (rr >= 300 && rr <= 1500) rrIntervals.push(rr);
+        }
+        if (rrIntervals.length === 0) {
+            console.log('❌ BPM Display: -- (no valid RR intervals)');
+            return;
+        }
+
+        // Trim outliers lightly when enough samples
+        const sorted = [...rrIntervals].sort((a, b) => a - b);
+        const trim = sorted.length >= 8 ? Math.floor(sorted.length * 0.1) : 0; // window ~8–12
+        const trimmed = trim > 0 ? sorted.slice(trim, sorted.length - trim) : sorted;
+        const avgRR = trimmed.reduce((s, v) => s + v, 0) / trimmed.length;
+        const instantBpm = 60000 / avgRR;
+
+        // Exponential smoothing for clinical-grade stability
+        const prev = smoothedBpm;
+        const next = prev === 0
+            ? instantBpm
+            : prev + BPM_SMOOTHING_ALPHA * (instantBpm - prev);
+
+        setSmoothedBpm(next);
+        setBpmDisplay(`${Math.round(next)} BPM`);
+        console.log(`✅ BPM Display: ${Math.round(next)} BPM (instant=${instantBpm.toFixed(1)}, smoothed=${next.toFixed(1)}, avgRR=${avgRR.toFixed(0)}ms)`);
+    }, [rPeakTimestamps, signalQuality, smoothedBpm]);
 
     useEffect(() => {
-        // Timer update (1 second)
-        const timerInterval = setInterval(() => {
-            if (startTime) {
-                const elapsed = Math.floor((Date.now() - startTime) / 1000);
-                const min = String(Math.floor(elapsed / 60)).padStart(2, "0");
-                const sec = String(elapsed % 60).padStart(2, "0");
-                setTimer(`${min}:${sec}`);
-            }
-        }, 1000);
+        if (!appActive) return; // CRITICAL: Don't run when idle
 
         // Peak detection update (faster for PQRST responsiveness)
         const peakInterval = setInterval(() => {
@@ -460,34 +470,41 @@ export default function EcgFullPanel() {
         }, 200); // 200ms = 5 times per second (balanced between performance and responsiveness)
 
         return () => {
-            clearInterval(timerInterval);
             clearInterval(peakInterval);
         };
-    }, [startTime, connected]);
+    }, [appActive, connected]);
 
     // Add effect to set gender
     useEffect(() => {
         intervalCalculator.current.setGender(gender);
     }, [gender]);
 
-    // Add this useEffect to load the model when the component mounts
-    useEffect(() => {
-        async function loadModel() {
-            try {
-                // Always try to load the model directly
-                const basePath = window.location.pathname.startsWith('/Rpeak') ? '/Rpeak/' : '/';
-                const model = await tf.loadLayersModel(`${basePath}models/beat-level-ecg-model.json`);
-                setEcgModel(model);
-                setModelLoaded(true);
-                console.log('ECG model loaded successfully');
-            } catch (err) {
-                setModelLoaded(false);
-                setEcgModel(null);
-                console.error('Failed to load model:', err);
-            }
+    // Explicit function to ensure model is loaded
+    const ensureModelLoaded = async () => {
+        if (ecgModel || modelLoaded) return;
+        if (modelLoading) return;
+
+        setModelLoading(true);
+        try {
+            console.log('Loading ECG model (triggered by user intent)...');
+            const model = await loadECGModel();
+            setEcgModel(model);
+            setModelLoaded(true);
+            console.log('ECG model loaded successfully');
+        } catch (err) {
+            console.error('Failed to load model:', err);
+            setModelLoaded(false);
+            setEcgModel(null);
+        } finally {
+            setModelLoading(false);
         }
-        loadModel();
-    }, []);
+    };
+
+    // Handle AI button click with explicit model load
+    const handleAIClick = async () => {
+        await ensureModelLoaded();
+        setShowAIAnalysis(prev => !prev);
+    };
 
     async function connect() {
         try {
@@ -525,7 +542,9 @@ export default function EcgFullPanel() {
                         filtered = Math.max(-1, Math.min(1, filtered));
 
                         // Store and use filtered value
+                        const absoluteIndex = totalSamples.current;
                         dataCh0.current[sampleIndex.current] = filtered;
+                        absoluteSampleIndexBuffer.current[sampleIndex.current] = absoluteIndex;
                         sampleIndex.current = (sampleIndex.current + 1) % NUM_POINTS;
                         totalSamples.current += 1;
                     }
@@ -604,10 +623,20 @@ export default function EcgFullPanel() {
         return polarityCorrectedSignal;
     };
 
-    // --- Update AianalyzeCurrent signal quality check ---
-    const AianalyzeCurrent = async () => {
+    // --- AI Analysis: CRITICAL - MUST use useCallback to prevent infinite loop ---
+    // This function is used in setInterval. Without useCallback, it recreates on every render,
+    // causing the effect to re-run infinitely. DO NOT remove useCallback!
+    const AianalyzeCurrent = React.useCallback(async () => {
         if (!ecgModel) {
             setModelPrediction({ prediction: "Analyzing", confidence: 0 });
+            return;
+        }
+
+        // Dynamically import TensorFlow for tensor operations
+        const { loadTensorFlow } = await import('../lib/tfLoader');
+        const tf = await loadTensorFlow();
+        if (!tf) {
+            setModelPrediction({ prediction: "TF Error", confidence: 0 });
             return;
         }
 
@@ -692,7 +721,7 @@ export default function EcgFullPanel() {
 
 
         try {
-            const outputTensor = ecgModel.predict(inputTensor) as tf.Tensor;
+            const outputTensor = ecgModel.predict(inputTensor) as any;
             const probabilities = await outputTensor.data();
 
             if (!probabilities || probabilities.length === 0) {
@@ -702,7 +731,7 @@ export default function EcgFullPanel() {
                 return;
             }
 
-            const predArray = Array.from(probabilities);
+            const predArray = Array.from(probabilities) as number[];
 
             const deviceBiasCorrection = [
                 1.4,  // Normal: moderate boost (reduced from 1.8)
@@ -712,7 +741,7 @@ export default function EcgFullPanel() {
                 0.7   // Other: mild reduction (increased from 0.5)
             ];
 
-            const correctedProbs = predArray.map((prob, idx) => prob * deviceBiasCorrection[idx]);
+            const correctedProbs = predArray.map((prob, idx) => (prob as number) * deviceBiasCorrection[idx]);
             const correctedSum = correctedProbs.reduce((a, b) => a + b, 0);
             const normalizedProbs = correctedProbs.map(p => p / correctedSum);
 
@@ -750,18 +779,24 @@ export default function EcgFullPanel() {
             setModelPrediction({ prediction: "Prediction Error", confidence: 0 });
             inputTensor.dispose();
         }
-    };
+    }, [ecgModel, classLabels]);
 
     useEffect(() => {
-        if (!showPQRST) return;
-
-        let lastPointsStr = JSON.stringify(pqrstPoints.current);
+        if (!showPQRST) return; // Already gated by appActive component
 
         const pqrstUpdateInterval = setInterval(() => {
-            const newPointsStr = JSON.stringify(pqrstPoints.current);
-            if (lastPointsStr !== newPointsStr) {
-                setVisiblePQRST([...pqrstPoints.current]);
-                lastPointsStr = newPointsStr;
+            const currentPoints = pqrstPoints.current;
+
+            // No data → do nothing
+            if (!currentPoints || currentPoints.length === 0) return;
+
+            // Efficient comparison: check length + last point's position instead of JSON.stringify
+            const currentSignature = `${currentPoints.length}-${currentPoints[currentPoints.length - 1]?.absolutePosition || 0}`;
+
+            // Only update React state if data ACTUALLY changed
+            if (lastPQRSTStrRef.current !== currentSignature) {
+                lastPQRSTStrRef.current = currentSignature;
+                setVisiblePQRST([...currentPoints]);
             }
         }, 200);
 
@@ -770,6 +805,8 @@ export default function EcgFullPanel() {
 
     // Add this effect to update signal quality
     useEffect(() => {
+        if (!appActive) return; // CRITICAL: Don't run when idle
+
         const signalQualityInterval = setInterval(() => {
             if (!connected) {
                 setSignalQuality('no-signal');
@@ -780,17 +817,21 @@ export default function EcgFullPanel() {
             const maxAbs = Math.max(...dataCh0.current.map(Math.abs));
             const variance = dataCh0.current.reduce((sum, val) => sum + Math.pow(val, 2), 0) / dataCh0.current.length;
 
-            if (maxAbs < 0.1 || variance < 0.001) {
+            // Relaxed thresholds - allow lower amplitude signals through
+            if (maxAbs < 0.05 || variance < 0.0001) {
+                console.log(`📡 Signal Quality: NO-SIGNAL (maxAbs=${maxAbs.toFixed(4)}, variance=${variance.toFixed(6)})`);
                 setSignalQuality('no-signal');
-            } else if (maxAbs < 0.3 || variance < 0.01) {
+            } else if (maxAbs < 0.15 || variance < 0.003) {
+                console.log(`📡 Signal Quality: POOR (maxAbs=${maxAbs.toFixed(4)}, variance=${variance.toFixed(6)})`);
                 setSignalQuality('poor');
             } else {
+                console.log(`📡 Signal Quality: GOOD (maxAbs=${maxAbs.toFixed(4)}, variance=${variance.toFixed(6)})`);
                 setSignalQuality('good');
             }
         }, 1000);
 
         return () => clearInterval(signalQualityInterval);
-    }, [connected]);
+    }, [appActive, connected]);
 
 
     // Add this function inside your EcgFullPanel component
@@ -838,48 +879,50 @@ export default function EcgFullPanel() {
 
     // Effect to run AianalyzeCurrent automatically when panel is visible
     useEffect(() => {
-        if (!showAIAnalysis) return;
-        if (!modelLoaded || !connected) return; // Changed from ecgIntervals to connected
-
+        if (!showAIAnalysis || !connected) return;
+        if (!ecgModel) return; // Use ecgModel directly instead of modelLoaded flag
 
         // Run initial analysis immediately
         AianalyzeCurrent();
 
-        // Set up auto-refresh every 30 seconds (3000 ms)
+        // Set up auto-refresh every 3 seconds (already gated by showAIAnalysis in appActive)
         const interval = setInterval(() => {
             AianalyzeCurrent();
-        }, 3000); // 3 second refresh
+        }, 3000);
 
         return () => {
             clearInterval(interval);
         };
-    }, [showAIAnalysis, modelLoaded, connected]); // Removed ecgIntervals dependency
+    }, [showAIAnalysis, ecgModel, connected, AianalyzeCurrent]);
 
-
-    // Initialize the session analyzer with model
+    // Recording timer effect - uses ref to avoid infinite loop (already gated by isRecording in appActive)
     useEffect(() => {
-        const loadModel = async () => {
-            await sessionAnalyzer.current.loadModel();
-        };
+        if (!isRecording) {
+            recordingStartRef.current = null;
+            setRecordingTime("00:00");
+            return;
+        }
 
-        loadModel();
-    }, []);
-
-    // Add this effect to update recording time
-    useEffect(() => {
-        if (!isRecording || !recordingStartTime) return;
+        // Initialize once when recording starts
+        if (recordingStartRef.current === null) {
+            recordingStartRef.current = Date.now();
+        }
 
         const timerInterval = setInterval(() => {
-            const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
-            const min = String(Math.floor(elapsed / 60)).padStart(2, "0");
-            const sec = String(elapsed % 60).padStart(2, "0");
+            const elapsedSeconds = Math.floor(
+                (Date.now() - recordingStartRef.current!) / 1000
+            );
+
+            const min = String(Math.floor(elapsedSeconds / 60)).padStart(2, "0");
+            const sec = String(elapsedSeconds % 60).padStart(2, "0");
+
             setRecordingTime(`${min}:${sec}`);
         }, 1000);
 
         return () => clearInterval(timerInterval);
-    }, [isRecording, recordingStartTime]);
+    }, [isRecording]);
 
-    // Periodically flush buffer to recordedData
+    // Periodically flush buffer to recordedData (already gated by isRecording in appActive)
     useEffect(() => {
         if (!isRecording) return;
         const id = setInterval(() => {
@@ -893,8 +936,10 @@ export default function EcgFullPanel() {
     // Add these functions to handle recording
     const startRecording = (patientInfo: PatientInfo) => {
         setIsRecording(true);
-        setRecordingStartTime(Date.now());
         setRecordedData([]);
+
+        // Reset session analyzer to prevent data leakage between recordings
+        sessionAnalyzer.current.reset();
 
         // Create a new session
         setCurrentSession({
@@ -911,12 +956,12 @@ export default function EcgFullPanel() {
     };
 
     const stopRecording = () => {
-        if (!isRecording || !currentSession || !recordingStartTime) {
+        if (!isRecording || !currentSession || !recordingStartRef.current) {
             return null;
         }
 
         const endTime = Date.now();
-        const duration = (endTime - recordingStartTime) / 1000;
+        const duration = (endTime - recordingStartRef.current) / 1000;
 
         // FIX: Detect peaks directly on recordedData for correct interval analysis
         const recordedPQRST = pqrstDetector.current.detectDirectWaves(recordedData);
@@ -989,27 +1034,21 @@ export default function EcgFullPanel() {
         document.body.removeChild(link);
     };
 
-    // Modify your data processing to record data
-    useEffect(() => {
+    // ADD near line 90 (with other useRefs):
+    const pendingStateUpdateRef = useRef<NodeJS.Timeout | null>(null);
 
-        // Add this to record data when in recording mode
-        if (isRecording) {
-            // Take a copy of the last N samples that came in
-            const newData = dataCh0.current.slice(
-                Math.max(0, sampleIndex.current - 10),
-                Math.min(NUM_POINTS, sampleIndex.current)
-            );
-
-            // If we wrapped around, also get the data from the end
-            if (sampleIndex.current < 10) {
-                const endData = dataCh0.current.slice(NUM_POINTS - (10 - sampleIndex.current));
-                newData.unshift(...endData);
-            }
-
-            // Add to recorded data
-            setRecordedData(prev => [...prev, ...newData]);
+    // REPLACE setVisiblePQRST calls with debounced version:
+    const debouncedSetVisiblePQRST = React.useCallback((points: PQRSTPoint[]) => {
+        // Cancel pending update if new data arrives
+        if (pendingStateUpdateRef.current) {
+            clearTimeout(pendingStateUpdateRef.current);
         }
-    }, [isRecording, sampleIndex.current]);
+        
+        // Schedule update for 50ms from now
+        pendingStateUpdateRef.current = setTimeout(() => {
+            setVisiblePQRST(points);
+        }, 50);
+    }, []);
 
     return (
         <div className="relative w-full h-full bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 ">
@@ -1065,7 +1104,8 @@ export default function EcgFullPanel() {
                             <div className="w-16 flex justify-center">
                                 <button
                                     onClick={connected ? undefined : connect}
-                                    className={`w-10 h-10 flex items-center justify-center rounded-full transition-all ${connected
+                                    className={`w-10 h-10 flex items-center justify-center rounded-full 
+                                                ${connected
                                         ? 'bg-green-500/20 text-green-400 border border-green-500/30 cursor-not-allowed'
                                         : 'bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30'
                                         }`}
@@ -1089,7 +1129,8 @@ export default function EcgFullPanel() {
                             <div className="w-16 flex justify-center">
                                 <button
                                     onClick={() => setShowPQRST(!showPQRST)}
-                                    className={`w-10 h-10 flex items-center justify-center rounded-full transition-all ${showPQRST
+                                    className={`w-10 h-10 flex items-center justify-center rounded-full 
+                                                ${showPQRST
                                         ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30 hover:bg-orange-500/30'
                                         : 'bg-gray-500/20 text-gray-400 border border-gray-500/30 hover:bg-gray-500/30'
                                         }`}
@@ -1113,7 +1154,8 @@ export default function EcgFullPanel() {
                             <div className="w-16 flex justify-center">
                                 <button
                                     onClick={() => setShowHRV(!showHRV)}
-                                    className={`w-10 h-10 flex items-center justify-center rounded-full transition-all ${showHRV
+                                    className={`w-10 h-10 flex items-center justify-center rounded-full 
+                                                ${showHRV
                                         ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30 hover:bg-purple-500/30'
                                         : 'bg-gray-500/20 text-gray-400 border border-gray-500/30 hover:bg-gray-500/30'
                                         }`}
@@ -1137,7 +1179,8 @@ export default function EcgFullPanel() {
                             <div className="w-16 flex justify-center">
                                 <button
                                     onClick={() => setShowIntervals(!showIntervals)}
-                                    className={`w-10 h-10 flex items-center justify-center rounded-full transition-all ${showIntervals
+                                    className={`w-10 h-10 flex items-center justify-center rounded-full 
+                                                ${showIntervals
                                         ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/30'
                                         : 'bg-gray-500/20 text-gray-400 border border-gray-500/30 hover:bg-gray-500/30'
                                         }`}
@@ -1162,12 +1205,12 @@ export default function EcgFullPanel() {
                                 <button
                                     onClick={() => isRecording ? stopRecording() : setShowPatientInfo(true)}
                                     disabled={!connected}
-                                    className={`w-10 h-10 flex items-center justify-center rounded-full transition-all ${
-                                        !connected ? 'bg-gray-500/20 text-gray-500 border border-gray-500/30 cursor-not-allowed' :
-                                        isRecording 
-                                            ? 'bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30 animate-pulse'
-                                            : 'bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30'
-                                    }`}
+                                    className={`w-10 h-10 flex items-center justify-center rounded-full 
+                                                ${!connected ? 'bg-gray-500/20 text-gray-500 border border-gray-500/30 cursor-not-allowed' :
+                                                isRecording 
+                                                    ? 'bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30 animate-pulse'
+                                                    : 'bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30'
+                                                }`}
                                     title={isRecording ? 'Stop Recording' : 'Start Recording'}
                                     aria-label={isRecording ? 'Stop Recording' : 'Start Recording'}
                                 >
@@ -1187,23 +1230,23 @@ export default function EcgFullPanel() {
                         <div className="flex">
                             <div className="w-16 flex justify-center">
                                 <button
-                                    onClick={() => setShowAIAnalysis(!showAIAnalysis)}
-                                    disabled={!modelLoaded}
-                                    className={`w-10 h-10 flex items-center justify-center rounded-full transition-all ${
-                                        !modelLoaded ? 'bg-gray-500/20 text-gray-500 border border-gray-500/30 cursor-not-allowed' :
-                                        showAIAnalysis
-                                            ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 hover:bg-yellow-500/30'
-                                            : 'bg-gray-500/20 text-gray-400 border border-gray-500/30 hover:bg-gray-500/30'
-                                    }`}
-                                    title={showAIAnalysis ? 'Hide AI Analysis' : 'Show AI Analysis'}
-                                    aria-label={showAIAnalysis ? 'Hide AI Analysis' : 'Show AI Analysis'}
+                                    onClick={handleAIClick}
+                                    disabled={modelLoading}
+                                    className={`w-10 h-10 flex items-center justify-center rounded-full 
+                                                ${modelLoading ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30 cursor-wait' :
+                                                showAIAnalysis
+                                                    ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 hover:bg-yellow-500/30'
+                                                    : 'bg-gray-500/20 text-gray-400 border border-gray-500/30 hover:bg-gray-500/30'
+                                                }`}
+                                    title={modelLoading ? 'Loading model...' : showAIAnalysis ? 'Hide AI Analysis' : 'Show AI Analysis'}
+                                    aria-label={modelLoading ? 'Loading model...' : showAIAnalysis ? 'Hide AI Analysis' : 'Show AI Analysis'}
                                 >
                                     <Zap className="w-5 h-5" />
                                 </button>
                             </div>
                             <div className="whitespace-nowrap hidden group-hover:flex items-center">
-                                <span className={`text-sm font-medium ${showAIAnalysis ? 'text-yellow-400' : 'text-gray-400'}`}>
-                                    {showAIAnalysis ? 'Hide AI Analysis' : 'AI Beat Analysis'}
+                                <span className={`text-sm font-medium ${modelLoading ? 'text-blue-400' : showAIAnalysis ? 'text-yellow-400' : 'text-gray-400'}`}>
+                                    {modelLoading ? 'Loading model...' : showAIAnalysis ? 'Hide AI Analysis' : 'AI Beat Analysis'}
                                 </span>
                             </div>
                         </div>
@@ -1614,45 +1657,37 @@ export default function EcgFullPanel() {
             )}
 
             {/* PQRST text labels overlay - updated for 1000 points */}
-            {showPQRST && (
+            {showPQRST && visiblePQRST.length >  0 && (
                 <div className="absolute inset-0 pointer-events-none">
                     {(() => {
-                        const validRPeakIndices = visiblePQRST.filter(p => p.type === "R").map(p => p.index);
-                        return visiblePQRST
-                            .filter(point => {
-                                if (point.type !== "R") return true;
-                                return validRPeakIndices.includes(point.index);
-                            })
-                            .map((point, index) => {
-                                // Show ALL points across the 1000-point window
-                                const xPercent = (point.index / NUM_POINTS) * 100;
-                                const yOffset = 50 - (point.amplitude * getScaleFactor() * 50);
+                        const scale = scaleFactorRef.current;
+                        return visiblePQRST.map((point, i) => {
+                            const xPercent = (point.index / NUM_POINTS) * 100;
+                            const yOffset = 50 - (point.amplitude * scale * 50);
 
-                                let color;
-                                switch (point.type) {
-                                    case 'P': color = 'text-orange-400'; break;
-                                    case 'Q': color = 'text-blue-400'; break;
-                                    case 'R': color = 'text-red-500'; break;
-                                    case 'S': color = 'text-cyan-400'; break;
-                                    case 'T': color = 'text-purple-400'; break;
-                                    default: color = 'text-white'; break;
-                                }
+                            const colorClass =
+                                point.type === 'P' ? 'text-orange-400' :
+                                point.type === 'Q' ? 'text-blue-400' :
+                                point.type === 'R' ? 'text-red-500' :
+                                point.type === 'S' ? 'text-cyan-400' :
+                                point.type === 'T' ? 'text-purple-400' : 'text-white';
 
-                                return (
-                                    <div
-                                        key={`pqrst-${index}`}
-                                        className={`absolute font-bold ${color}`}
-                                        style={{
-                                            left: `${xPercent}%`,
-                                            top: `${yOffset}%`,
-                                            transform: 'translate(-50%, -50%)',
-                                            textShadow: '0 0 4px rgba(0,0,0,0.8)'
-                                        }}
-                                    >
-                                        {point.type}
-                                    </div>
-                                );
-                            });
+                            return (
+                                <div
+                                    key={`pqrst-${point.type}-${point.index}-${i}`}
+                                    className={`absolute font-bold ${colorClass}`}
+                                    style={{
+                                        left: `${xPercent}%`,
+                                        top: `${yOffset}%`,
+                                        transform: 'translate(-50%, -50%)',
+                                        textShadow: '0 0 4px rgba(0,0,0,0.8)',
+                                        willChange: 'transform'
+                                    }}
+                                >
+                                    {point.type}
+                                </div>
+                            );
+                        });
                     })()}
                 </div>
             )}

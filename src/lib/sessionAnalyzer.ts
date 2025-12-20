@@ -4,7 +4,7 @@ import { PQRSTDetector } from './pqrstDetector';
 import { PanTompkinsDetector } from './panTompkinsDetector';
 import { RecordingSession, PatientInfo } from '../components/SessionRecording';
 import { AAMI_CLASSES, zscoreNorm } from './modelTrainer';
-import * as tf from '@tensorflow/tfjs';
+import { loadECGModel, loadTensorFlow } from './tfLoader';
 
 export type SessionAnalysisResults = {
     summary: {
@@ -92,7 +92,7 @@ export class SessionAnalyzer {
     private pqrstDetector: PQRSTDetector;
     private intervalCalculator: ECGIntervalCalculator;
     private hrvCalculator: HRVCalculator;
-    private model: tf.LayersModel | null = null;
+    private model: any | null = null;
     private sampleRate: number;
 
     constructor(sampleRate: number) {
@@ -105,37 +105,23 @@ export class SessionAnalyzer {
 
     async loadModel(): Promise<boolean> {
         try {
-            const modelSources = [
-                'localstorage://beat-level-ecg-model',
-                this.getModelPath(),
-                'models/beat-level-ecg-model.json',
-            ];
-
-            for (const modelUrl of modelSources) {
-                try {
-
-                    if (modelUrl.startsWith('localstorage://')) {
-                        const models = await tf.io.listModels();
-                        if (!models[modelUrl]) {
-
-                            continue;
-                        }
-                    }
-                    this.model = await tf.loadLayersModel(modelUrl);
-
-                    return true;
-                } catch (err) {
-
-                    continue;
-                }
-            }
-            console.warn('No beat-level ECG model could be loaded from any source');
-            return false;
+            this.model = await loadECGModel();
+            return true;
         } catch (err) {
             console.error('Failed to load beat-level ECG model:', err);
             this.model = null;
             return false;
         }
+    }
+
+    /**
+     * Reset internal state between recording sessions to prevent data leakage.
+     */
+    reset(): void {
+        // Reset HRV calculator which accumulates RR intervals
+        this.hrvCalculator.reset();
+        // Note: Detectors (PanTompkins, PQRST) are stateless, no reset needed
+        // intervalCalculator is also stateless
     }
 
     /**
@@ -472,14 +458,21 @@ export class SessionAnalyzer {
                     continue;
                 }
 
+                // Dynamically load TensorFlow for tensor operations
+                const tf = await loadTensorFlow();
+                if (!tf) {
+                    console.error('TensorFlow.js not loaded');
+                    continue;
+                }
+
                 // Create input tensor for the model - shape [1, 135, 1]
                 const inputTensor = tf.tensor3d([normalizedBeat.map(v => [v])], [1, beatLength, 1]);
 
                 try {
-                    const outputTensor = this.model.predict(inputTensor) as tf.Tensor;
+                    const outputTensor = this.model.predict(inputTensor) as any;
                     const probabilities = await outputTensor.data();
 
-                    const predArray = Array.from(probabilities);
+                    const predArray = Array.from(probabilities) as number[];
 
                     // Apply the same bias correction as real-time analysis
                     const deviceBiasCorrection = [
@@ -490,7 +483,7 @@ export class SessionAnalyzer {
                         0.7   // Other: mild reduction
                     ];
 
-                    const correctedProbs = predArray.map((prob, idx) => prob * deviceBiasCorrection[idx]);
+                    const correctedProbs = predArray.map((prob, idx) => (prob as number) * deviceBiasCorrection[idx]);
                     const correctedSum = correctedProbs.reduce((a, b) => a + b, 0);
                     const normalizedProbs = correctedProbs.map(p => p / correctedSum);
 
