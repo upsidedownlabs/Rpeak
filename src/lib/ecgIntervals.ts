@@ -36,25 +36,19 @@ export class ECGIntervalCalculator {
    * @returns ECG intervals or null if not enough points
    */
   calculateIntervals(pqrstPoints: PQRSTPoint[]): ECGIntervals | null {
-    console.log(`[calculateIntervals] received ${pqrstPoints.length} points: ${pqrstPoints.map(p => `${p.type}@${p.absolutePosition}`).join(', ')}`);
-    
     // Group points by their PQRST complex
     const complexes = this.groupIntoComplexes(pqrstPoints);
-    console.log(`[calculateIntervals] grouped into ${complexes.length} complexes`);
     
     // Need at least one complete complex to calculate intervals
     if (complexes.length < 1) {
-      console.log(`[calculateIntervals] ERROR: no complexes, returning null`);
       return this.lastIntervals;
     }
     
     // Use the most recent complex for calculations
     const latestComplex = complexes[complexes.length - 1];
-    console.log(`[calculateIntervals] latest complex has ${latestComplex.length} points`);
     
     // Check if complex has all required points
     if (!this.isCompleteComplex(latestComplex)) {
-      console.log(`[calculateIntervals] WARNING: complex incomplete, returning previous intervals`);
       return this.lastIntervals;
     }
     

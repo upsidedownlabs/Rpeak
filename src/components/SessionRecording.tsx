@@ -27,6 +27,7 @@ export type RecordingSession = {
   pqrstPoints: PQRSTPoint[];
   // Add this new property
   intervals?: ECGIntervals | null;
+  stSegmentData?: { deviation: number; status: string } | null;
 }
 
 export interface SessionRecordingProps {

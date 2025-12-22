@@ -103,6 +103,7 @@ export default function EcgFullPanel() {
     const BPM_SMOOTHING_ALPHA = 0.1; // Lower = more stable
     const BPM_UPDATE_INTERVAL_MS = 1000; // Update display at 1 Hz
     const lastBpmUpdateRef = useRef(0);
+    const smoothedBpmRef = useRef(0); // Track smoothed BPM without causing re-renders
 
     type HRVMetrics = {
         sampleCount: number;
@@ -424,14 +425,15 @@ export default function EcgFullPanel() {
         const instantBpm = 60000 / avgRR;
 
         // Exponential smoothing for clinical-grade stability
-        const prev = smoothedBpm;
+        const prev = smoothedBpmRef.current;
         const next = prev === 0
             ? instantBpm
             : prev + BPM_SMOOTHING_ALPHA * (instantBpm - prev);
 
+        smoothedBpmRef.current = next;
         setSmoothedBpm(next);
         setBpmDisplay(`${Math.round(next)} BPM`);
-    }, [rPeakTimestamps, signalQuality, smoothedBpm]);
+    }, [rPeakTimestamps, signalQuality]);
 
     useEffect(() => {
         if (!appActive) return; // CRITICAL: Don't run when idle
@@ -814,6 +816,11 @@ export default function EcgFullPanel() {
         // Get ST segment point (80ms after J-point)
         const stPointIndex = jPointIndex + Math.floor(0.08 * SAMPLE_RATE);
 
+        // Validate ST point is within reasonable bounds (between S and T)
+        if (stPointIndex < sPoint.index || stPointIndex > tPoint.index) {
+            return null; // ST point outside valid range
+        }
+
         // Get baseline as PR segment level (or use isoelectric line)
         const baseline = qPoint.amplitude;
 
@@ -828,8 +835,18 @@ export default function EcgFullPanel() {
             stValue = sPoint.amplitude + ratio * (tPoint.amplitude - sPoint.amplitude);
         }
 
+        // Validate amplitude values are reasonable
+        if (!Number.isFinite(stValue) || !Number.isFinite(baseline)) {
+            return null;
+        }
+
         // Calculate ST deviation in mm (1mm = 0.1mV in standard ECG)
         const deviation = (stValue - baseline) * 10;
+
+        // Validate deviation is within physiological bounds (±5mm)
+        if (Math.abs(deviation) > 5.0) {
+            return null; // Likely artifact or noise
+        }
 
         // Determine status using standard clinical thresholds
         let status: 'normal' | 'elevation' | 'depression' = 'normal';
@@ -931,19 +948,15 @@ export default function EcgFullPanel() {
         // Flush any remaining buffered samples into recordedData snapshot
         const recordedDataSnapshot = recordedDataRef.current.concat(recordBufferRef.current.splice(0));
         setRecordedData(recordedDataSnapshot);
-        console.log(`[stopRecording] recordedDataRef=${recordedDataRef.current.length}, buffer=${recordBufferRef.current.length}, snapshot=${recordedDataSnapshot.length}`);
-
+       
         // Use shared detector on full snapshot (this is critical!)
         const freshRPeaks = detectRPeaksECG(recordedDataSnapshot, SAMPLE_RATE, { adaptiveThreshold: true });
-        console.log(`[stopRecording] shared detector returned ${freshRPeaks.length} R-peaks from snapshot`);
         
         // Verify data isn't empty
         if (recordedDataSnapshot.length === 0) {
-            console.log(`[stopRecording] ERROR: snapshot is empty!`);
-        }
+         }
         if (freshRPeaks.length === 0) {
-            console.log(`[stopRecording] WARNING: no peaks detected in snapshot, checking signal stats...`);
-            if (recordedDataSnapshot.length > 0) {
+             if (recordedDataSnapshot.length > 0) {
                 const maxAbs = Math.max(...recordedDataSnapshot.map(Math.abs));
                 const mean = recordedDataSnapshot.reduce((a, b) => a + b, 0) / recordedDataSnapshot.length;
                 console.log(`[stopRecording] snapshot stats: maxAbs=${maxAbs.toFixed(4)}, mean=${mean.toFixed(4)}`);
@@ -955,8 +968,10 @@ export default function EcgFullPanel() {
         console.log(`[stopRecording] detectWaves returned ${freshPQRST.length} PQRST points: ${freshPQRST.map(p => `${p.type}@${p.absolutePosition}`).join(', ')}`);
         
         const freshIntervals = intervalCalculator.current.calculateIntervals(freshPQRST);
-        console.log(`[stopRecording] storing session with rPeaks=${freshRPeaks.length}, pqrstPoints=${freshPQRST.length}`);
-
+        
+        // Calculate ST segment analysis from PQRST points
+        const freshSTSegment = analyzeSTSegment(freshPQRST);
+      
         const updatedSession: RecordingSession = {
             ...currentSession,
             endTime,
@@ -964,7 +979,8 @@ export default function EcgFullPanel() {
             ecgData: recordedDataSnapshot,
             rPeaks: freshRPeaks,
             pqrstPoints: freshPQRST,
-            intervals: freshIntervals || null
+            intervals: freshIntervals || null,
+            stSegmentData: freshSTSegment || null
         };
 
         setCurrentSession(updatedSession);
@@ -1033,6 +1049,15 @@ export default function EcgFullPanel() {
         pendingStateUpdateRef.current = setTimeout(() => {
             setVisiblePQRST(points);
         }, 50);
+    }, []);
+
+    // Cleanup debounced timeout on unmount
+    useEffect(() => {
+        return () => {
+            if (pendingStateUpdateRef.current) {
+                clearTimeout(pendingStateUpdateRef.current);
+            }
+        };
     }, []);
 
     return (
@@ -1283,7 +1308,7 @@ export default function EcgFullPanel() {
                                     ></div>
                                 </div>
                                 <p className="text-xs text-gray-400 mt-1">
-                                    Confidence: {(physioState.confidence * 100).toFixed(0)}%
+                                    Confidence: {Number.isFinite(physioState.confidence) ? (physioState.confidence * 100).toFixed(0) : '0'}%
                                 </p>
                             </div>
 
@@ -1307,46 +1332,59 @@ export default function EcgFullPanel() {
                             <div className="space-y-3">
                                 <div className="flex justify-between">
                                     <span className="text-gray-300">RMSSD:</span>
-                                    <span className="font-mono text-green-400">{hrvMetrics.rmssd.toFixed(1)} ms</span>
+                                    <span className="font-mono text-green-400">
+                                        {Number.isFinite(hrvMetrics.rmssd) ? hrvMetrics.rmssd.toFixed(1) : '--'} ms
+                                    </span>
                                 </div>
                                 <div className="flex justify-between">
                                     <span className="text-gray-300">SDNN:</span>
-                                    <span className="font-mono text-blue-400">{hrvMetrics.sdnn.toFixed(1)} ms</span>
+                                    <span className="font-mono text-blue-400">
+                                        {Number.isFinite(hrvMetrics.sdnn) ? hrvMetrics.sdnn.toFixed(1) : '--'} ms
+                                    </span>
                                 </div>
                                 <div className="flex justify-between">
                                     <span className="text-gray-300">pNN50:</span>
-                                    <span className="font-mono text-yellow-400">{hrvMetrics.pnn50.toFixed(1)}%</span>
+                                    <span className="font-mono text-yellow-400">
+                                        {Number.isFinite(hrvMetrics.pnn50) ? hrvMetrics.pnn50.toFixed(1) : '--'}%
+                                    </span>
                                 </div>
                                 <div className="flex justify-between">
                                     <span className="text-gray-300">Triangular:</span>
-                                    <span className="font-mono text-purple-400">{hrvMetrics.triangularIndex.toFixed(1)}</span>
+                                    <span className="font-mono text-purple-400">
+                                        {Number.isFinite(hrvMetrics.triangularIndex) ? hrvMetrics.triangularIndex.toFixed(1) : '--'}
+                                    </span>
                                 </div>
                             </div>
 
                             {/* Frequency Domain */}
                             <div className="mt-4 pt-4 border-t border-white/20">
                                 <h4 className="text-sm font-medium text-gray-300 mb-2">Frequency Domain</h4>
+                                <div className="mb-2 p-2 rounded border border-yellow-500/30 bg-yellow-500/10">
+                                    <p className="text-xs text-yellow-300">⚠️ Approximate values - simplified calculation</p>
+                                </div>
                                 <div className="space-y-2">
                                     <div className="flex justify-between">
                                         <span className="text-gray-400 text-sm">LF Power:</span>
                                         <span className="font-mono text-blue-400 text-sm">
-                                            {hrvMetrics.lfhf.lf.toFixed(2)} ms²
+                                            {Number.isFinite(hrvMetrics.lfhf.lf) ? hrvMetrics.lfhf.lf.toFixed(2) : '--'} ms²
                                         </span>
                                     </div>
                                     <div className="flex justify-between">
                                         <span className="text-gray-400 text-sm">HF Power:</span>
                                         <span className="font-mono text-green-400 text-sm">
-                                            {hrvMetrics.lfhf.hf.toFixed(2)} ms²
+                                            {Number.isFinite(hrvMetrics.lfhf.hf) ? hrvMetrics.lfhf.hf.toFixed(2) : '--'} ms²
                                         </span>
                                     </div>
                                     <div className="flex justify-between">
                                         <span className="text-gray-400 text-sm">LF/HF Ratio:</span>
                                         <span className="font-mono text-orange-400 text-sm">
-                                            {hrvMetrics.lfhf.ratio.toFixed(2)}
-                                            <span className="text-xs ml-1 text-gray-400">
-                                                {hrvMetrics.lfhf.ratio > 2.0 ? '(Sympathetic ↑)' :
-                                                    hrvMetrics.lfhf.ratio < 0.5 ? '(Parasympathetic ↑)' : '(Balanced)'}
-                                            </span>
+                                            {Number.isFinite(hrvMetrics.lfhf.ratio) ? hrvMetrics.lfhf.ratio.toFixed(2) : '--'}
+                                            {Number.isFinite(hrvMetrics.lfhf.ratio) && (
+                                                <span className="text-xs ml-1 text-gray-400">
+                                                    {hrvMetrics.lfhf.ratio > 2.0 ? '(Sympathetic ↑)' :
+                                                        hrvMetrics.lfhf.ratio < 0.5 ? '(Parasympathetic ↑)' : '(Balanced)'}
+                                                </span>
+                                            )}
                                         </span>
                                     </div>
                                 </div>
@@ -1438,7 +1476,7 @@ export default function EcgFullPanel() {
                                         ></div>
                                     </div>
                                     <div className="text-xs text-gray-400">
-                                        Confidence: {modelPrediction.confidence.toFixed(1)}%
+                                        Confidence: {Number.isFinite(modelPrediction.confidence) ? modelPrediction.confidence.toFixed(1) : '0'}%
                                         {modelPrediction.confidence >= 70 && <span className="text-green-400 ml-2">✓ High</span>}
                                         {modelPrediction.confidence >= 45 && modelPrediction.confidence < 70 && <span className="text-yellow-400 ml-2">~ Medium</span>}
                                         {modelPrediction.confidence < 45 && <span className="text-red-400 ml-2">⚠ Low</span>}
@@ -1578,7 +1616,7 @@ export default function EcgFullPanel() {
                                                         stSegmentData.status === 'elevation' ? 'text-red-400' :
                                                             'text-yellow-400'
                                                         }`}>
-                                                        {stSegmentData.deviation.toFixed(2)} mm
+                                                        {Number.isFinite(stSegmentData.deviation) ? stSegmentData.deviation.toFixed(2) : '--'} mm
                                                     </span>
                                                 </div>
                                                 <div className="text-xs text-gray-400 mt-1">
