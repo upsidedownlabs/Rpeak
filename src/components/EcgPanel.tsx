@@ -149,8 +149,11 @@ export default function EcgFullPanel() {
         const canvas = canvasRef.current;
         if (!canvas) return;
 
+        let rafId: number | null = null;
+
         // Defer WebGL init to reduce initial load
         const initWebGL = () => {
+           
             const dpr = window.devicePixelRatio || 1;
             canvas.width = canvas.clientWidth * dpr;
             canvas.height = canvas.clientHeight * dpr;
@@ -195,15 +198,13 @@ export default function EcgFullPanel() {
             tLineRef.current = tLine;
 
             const render = () => {
-                requestAnimationFrame(render);
-
+                rafId = requestAnimationFrame(render);
                 // Skip redraw when idle (saves CPU/GPU)
                 if (!connected && totalSamples.current === 0) return;
-
+               
                 const scale = getScaleFactor();
                 for (let i = 0; i < NUM_POINTS; i++) {
                     line.setY(i, dataCh0.current[i] * scale);
-
                     // Update PQRST lines if visible
                     if (showPQRST) {
                         pLine.setY(i, pLineRef.current?.getY(i) || 0);
@@ -221,7 +222,13 @@ export default function EcgFullPanel() {
         // Use requestIdleCallback to defer WebGL init until browser is idle
         const idleCallbackId = requestIdleCallback(initWebGL, { timeout: 2000 });
 
-        return () => cancelIdleCallback(idleCallbackId);
+        return () => {
+          
+            cancelIdleCallback(idleCallbackId);
+            if (rafId !== null) {
+                cancelAnimationFrame(rafId);
+            }
+        };
     }, [showPQRST]);
 
     function getScaleFactor() {
@@ -246,6 +253,7 @@ export default function EcgFullPanel() {
     }, [appActive]);
 
     function updatePeaks() {
+      
         // Compute signal statistics
         const maxAbs = Math.max(...dataCh0.current.map(Math.abs));
         const mean = dataCh0.current.reduce((sum, val) => sum + val, 0) / dataCh0.current.length;
@@ -253,6 +261,7 @@ export default function EcgFullPanel() {
 
         // Skip peak detection if the signal is too weak or too flat
         if (maxAbs < 0.05 || variance < 0.0002) {
+          
             pqrstPoints.current = [];
             if (showPQRST) {
                 setVisiblePQRST([]);
@@ -287,19 +296,10 @@ export default function EcgFullPanel() {
             }
         }
 
-        if (peaks.length >= 2) {
-            hrvCalculator.current.extractRRFromPeaks(peaks, SAMPLE_RATE);
-            const metrics = hrvCalculator.current.getAllMetrics();
-            setHrvMetrics(prev => {
-                // Compare by sampleCount to avoid deep equality checks
-                if (!prev || prev.sampleCount !== metrics.sampleCount) {
-                    return metrics;
-                }
-                return prev;
-            });
-        } else {
-            setHrvMetrics(null);
-        }
+        // Always update HRV metrics, even if only one peak (show partial data)
+        hrvCalculator.current.extractRRFromPeaks(peaks, SAMPLE_RATE);
+        const metrics = hrvCalculator.current.getAllMetrics();
+        setHrvMetrics(metrics);
 
         // Process R-peaks for BPM calculation before early return
         const absolutePeaks = peaks
@@ -326,7 +326,8 @@ export default function EcgFullPanel() {
 
     }
     useEffect(() => {
-        if (hrvMetrics && hrvMetrics.sampleCount >= 30) {
+        // Always update physiological state based on latest HRV metrics
+        if (hrvMetrics) {
             const stateObj = hrvCalculator.current.getPhysiologicalState();
             setPhysioState(stateObj);
         } else {
@@ -436,16 +437,22 @@ export default function EcgFullPanel() {
     }, [rPeakTimestamps, signalQuality]);
 
     useEffect(() => {
-        if (!appActive) return; // CRITICAL: Don't run when idle
-
+        if (!appActive) {
+          
+            return;
+        }
+       
         // Peak detection update (faster for PQRST responsiveness)
         const peakInterval = setInterval(() => {
             if (connected) {
                 updatePeaks();
+            } else {
+                console.log(' not connected');
             }
         }, 200); // 200ms = 5 times per second (balanced between performance and responsiveness)
 
         return () => {
+           
             clearInterval(peakInterval);
         };
     }, [appActive, connected]);
@@ -482,6 +489,7 @@ export default function EcgFullPanel() {
     };
 
     async function connect() {
+       
         try {
             // Check if navigator.bluetooth is available
             if (!('bluetooth' in navigator)) {
@@ -500,9 +508,11 @@ export default function EcgFullPanel() {
             await controlChar?.writeValue(new TextEncoder().encode("START"));
             await dataChar?.startNotifications();
 
-            dataChar?.addEventListener("characteristicvaluechanged", (event: any) => {
+            const handler = (event: any) => {
+              
                 const value = event.target.value;
                 if (value.byteLength === NEW_PACKET_LEN) {
+                  
                     for (let i = 0; i < NEW_PACKET_LEN; i += SINGLE_SAMPLE_LEN) {
                         const view = new DataView(value.buffer.slice(i, i + SINGLE_SAMPLE_LEN));
                         const raw = view.getInt16(1, false);
@@ -531,9 +541,11 @@ export default function EcgFullPanel() {
 
                     // Peak updates are driven by the periodic interval
                 }
-            });
+            };
+            dataChar?.addEventListener("characteristicvaluechanged", handler);
 
             setConnected(true);
+          
             setStartTime(Date.now());
             hrvCalculator.current.reset();
             intervalCalculator.current.reset(); // Reset interval calculator
@@ -866,10 +878,12 @@ export default function EcgFullPanel() {
 
         // Auto-refresh every 3 seconds
         const interval = setInterval(() => {
+           
             AianalyzeCurrent();
         }, 3000);
 
         return () => {
+          
             clearInterval(interval);
         };
     }, [showAIAnalysis, ecgModel, connected, AianalyzeCurrent]);
@@ -959,14 +973,13 @@ export default function EcgFullPanel() {
              if (recordedDataSnapshot.length > 0) {
                 const maxAbs = Math.max(...recordedDataSnapshot.map(Math.abs));
                 const mean = recordedDataSnapshot.reduce((a, b) => a + b, 0) / recordedDataSnapshot.length;
-                console.log(`[stopRecording] snapshot stats: maxAbs=${maxAbs.toFixed(4)}, mean=${mean.toFixed(4)}`);
+               
             }
         }
 
         // Use PQRST detector for interval points (separate from peak detection)
         const freshPQRST = pqrstDetector.current.detectWaves(recordedDataSnapshot, freshRPeaks, 0);
-        console.log(`[stopRecording] detectWaves returned ${freshPQRST.length} PQRST points: ${freshPQRST.map(p => `${p.type}@${p.absolutePosition}`).join(', ')}`);
-        
+       
         const freshIntervals = intervalCalculator.current.calculateIntervals(freshPQRST);
         
         // Calculate ST segment analysis from PQRST points

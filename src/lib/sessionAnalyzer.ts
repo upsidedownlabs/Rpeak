@@ -1,7 +1,6 @@
 import { ECGIntervalCalculator } from './ecgIntervals';
 import { HRVCalculator } from './hrvCalculator';
 import { PQRSTDetector } from './pqrstDetector';
-import { PanTompkinsDetector } from './panTompkinsDetector';
 import { RecordingSession, PatientInfo } from '../components/SessionRecording';
 import { AAMI_CLASSES, zscoreNorm } from './modelTrainer';
 import { loadECGModel, loadTensorFlow } from './tfLoader';
@@ -89,7 +88,6 @@ export type SessionAnalysisResults = {
 };
 
 export class SessionAnalyzer {
-    private panTompkins: PanTompkinsDetector;
     private pqrstDetector: PQRSTDetector;
     private intervalCalculator: ECGIntervalCalculator;
     private hrvCalculator: HRVCalculator;
@@ -98,7 +96,6 @@ export class SessionAnalyzer {
 
     constructor(sampleRate: number) {
         this.sampleRate = sampleRate;
-        this.panTompkins = new PanTompkinsDetector(sampleRate);
         this.pqrstDetector = new PQRSTDetector(sampleRate);
         this.intervalCalculator = new ECGIntervalCalculator(sampleRate);
         this.hrvCalculator = new HRVCalculator();
