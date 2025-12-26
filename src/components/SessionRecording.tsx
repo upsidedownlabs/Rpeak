@@ -5,7 +5,6 @@ import {
 
 import { PQRSTPoint } from '../lib/pqrstDetector';
 import { ECGIntervals } from '../lib/ecgIntervals';
-import { SessionAnalysisResults } from '../lib/sessionAnalyzer';
 
 export type PatientInfo = {
   age: number;
@@ -28,33 +27,17 @@ export type RecordingSession = {
   pqrstPoints: PQRSTPoint[];
   // Add this new property
   intervals?: ECGIntervals | null;
+  stSegmentData?: { deviation: number; status: string } | null;
 }
 
 export interface SessionRecordingProps {
-  connected: boolean;
   onStartRecording: (patientInfo: PatientInfo) => void;
-  onStopRecording: () => RecordingSession | null;
-  isRecording: boolean;
-  recordingTime: string;
-  onClose: () => void; // <-- Add this line
-}
-
-interface SessionReportProps {
-  analysisResults: SessionAnalysisResults;
-  patientInfo: PatientInfo;
-  sessionDate: Date;
-  recordingTime: string;
   onClose: () => void;
-  onSaveReport: () => void;
 }
 
 const SessionRecording: React.FC<SessionRecordingProps> = ({
-  connected,
   onStartRecording,
-  onStopRecording,
-  isRecording,
-  recordingTime,
-  onClose, // <-- Use this prop
+  onClose,
 }) => {
   const [patientInfo, setPatientInfo] = useState<PatientInfo>({
     age: 30,
@@ -64,7 +47,6 @@ const SessionRecording: React.FC<SessionRecordingProps> = ({
     medicalHistory: [],
     medications: []
   });
-  const [showSessionReport, setShowSessionReport] = useState(false);
 
 
   // Medical history options
@@ -126,9 +108,9 @@ const SessionRecording: React.FC<SessionRecordingProps> = ({
   };
 
  const handleStartRecording = () => {
-  onStartRecording(patientInfo);
-  onClose();
-};
+    onStartRecording(patientInfo);
+    onClose();
+  };
 
 
   return (
@@ -245,7 +227,7 @@ const SessionRecording: React.FC<SessionRecordingProps> = ({
 
           <div className="flex justify-between">
             <button
-              onClick={onClose} // <-- use onClose instead of setShowPatientInfo(false)
+              onClick={onClose}
               className="px-4 py-2 rounded-lg border border-gray-700 text-gray-300 hover:bg-gray-800"
             >
               Cancel

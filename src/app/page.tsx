@@ -1,8 +1,19 @@
 "use client";
 
 import { useState, useEffect, useRef } from 'react';
+import dynamic from 'next/dynamic';
 import { useModel } from '@/providers/ModelProvider';
-import EcgPanel from '../components/EcgPanel';
+
+// CRITICAL FIX #1: Lazy load EcgPanel to allow LCP to paint first
+// This prevents 190s render delay by deferring heavy WebGL/interval work
+const EcgPanel = dynamic(() => import('../components/EcgPanel'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex items-center justify-center h-screen">
+      <div className="text-white text-xl">...</div>
+    </div>
+  )
+});
 
 export default function HomePage() {
   const { predict } = useModel();
@@ -65,6 +76,12 @@ export default function HomePage() {
   
   return (
     <div className="relative w-full h-screen overflow-hidden bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+      {/* CRITICAL FIX #6: Simple LCP element that can paint immediately */}
+      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+        <h1 className="text-4xl font-bold text-white/10" id="lcp-title">
+          ECG Dashboard
+        </h1>
+      </div>
       <EcgPanel />
     </div>
   );

@@ -153,6 +153,10 @@ For optimal ECG signal quality with the Npg Lite device, place the electrodes as
 
 This configuration helps maximize R-wave amplitude and minimize noise for reliable single-lead ECG monitoring.
 
+
+![Recommended Electrode Placement](./public/assets/electrodeplacement.jpeg)
+
+
 > **Tip:** For best results, clean the skin with alcohol swabs before attaching electrodes.
 
 ----

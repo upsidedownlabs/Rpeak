@@ -2,36 +2,10 @@ import React from 'react';
 import { SessionAnalysisResults } from '../lib/sessionAnalyzer';
 import { PatientInfo } from './SessionRecording';
 import {
-    FileText, User, Clock, Activity, Heart, TrendingUp,
-    Zap, ClipboardList, AlertTriangle, CheckCircle, AlertCircle
+    FileText, User, Clock, TrendingUp,
+    Zap, AlertTriangle, CheckCircle, AlertCircle
 } from 'lucide-react';
 
-// Add this mapping for readable labels (updated for AAMI classes)
-const predictionLabels: Record<string, string> = {
-    "Normal Sinus Rhythm": "Normal Sinus Rhythm",
-    "Ventricular Arrhythmia": "Ventricular Arrhythmia",
-    "Supraventricular Arrhythmia": "Supraventricular Arrhythmia",
-    "Fusion Beats Detected": "Fusion Beats Detected",
-    "Abnormal Rhythm": "Abnormal Rhythm",
-    "Mixed Rhythm Pattern": "Mixed Rhythm Pattern",
-    "Bradycardia": "Bradycardia",
-    "Tachycardia": "Tachycardia",
-    "Analysis Failed": "Analysis Failed",
-    "Error": "Analysis Error"
-};
-
-const predictionExplanations: Record<string, string> = {
-    "Normal Sinus Rhythm": "Your heart's electrical activity appears normal with regular rhythm patterns. The AI detected predominantly normal heartbeats with consistent timing.",
-    "Ventricular Arrhythmia": "Abnormal heartbeats originating from the ventricles detected. The AI identified irregular electrical patterns that may require medical attention.",
-    "Supraventricular Arrhythmia": "Abnormal heartbeats originating above the ventricles detected. The AI found irregular patterns in the upper chambers of the heart.",
-    "Fusion Beats Detected": "Mixed conduction patterns indicating fusion of normal and abnormal beats. The AI detected complex rhythm patterns with overlapping electrical activity.",
-    "Abnormal Rhythm": "Irregular heart rhythm patterns that don't fit standard categories. The AI identified unusual electrical activity requiring further evaluation.",
-    "Mixed Rhythm Pattern": "Complex rhythm with multiple types of abnormal beats detected. The AI found various irregular patterns throughout the recording.",
-    "Bradycardia": "Slow heart rate detected (below 60 BPM). The AI confirmed consistently slow heart rhythm patterns.",
-    "Tachycardia": "Fast heart rate detected (above 100 BPM). The AI confirmed consistently fast heart rhythm patterns.",
-    "Analysis Failed": "Unable to analyze rhythm due to insufficient data or poor signal quality. The AI could not process the ECG data reliably.",
-    "Error": "Technical error occurred during AI analysis. The classification system encountered processing difficulties."
-};
 
 // Beat classification labels for detailed breakdown
 const beatLabels: Record<string, string> = {
@@ -75,7 +49,6 @@ export default function SessionReport({
     const rPeaks = analysisResults.summary.rPeaks ?? [];
     const numBeats = rPeaks.length;
     const durationSeconds = parseDuration(analysisResults.summary.recordingDuration);
-    const durationMinutes = durationSeconds / 60;
 
     // Determine overall status color based on findings
     const getOverallStatusColor = () => {
@@ -280,7 +253,7 @@ export default function SessionReport({
                                     </div>
 
                                     {/* Right Column - Analysis Insights */}
-                                    <div className="space-y-3">
+                                    <div className="space-y-1">
 
 
                                         {/* AI Analysis Quality Metrics */}

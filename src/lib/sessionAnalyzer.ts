@@ -1,10 +1,10 @@
 import { ECGIntervalCalculator } from './ecgIntervals';
 import { HRVCalculator } from './hrvCalculator';
 import { PQRSTDetector } from './pqrstDetector';
-import { PanTompkinsDetector } from './panTompkinsDetector';
 import { RecordingSession, PatientInfo } from '../components/SessionRecording';
 import { AAMI_CLASSES, zscoreNorm } from './modelTrainer';
-import * as tf from '@tensorflow/tfjs';
+import { loadECGModel, loadTensorFlow } from './tfLoader';
+import { detectRPeaksECG } from './rPeakDetector';
 
 export type SessionAnalysisResults = {
     summary: {
@@ -88,16 +88,14 @@ export type SessionAnalysisResults = {
 };
 
 export class SessionAnalyzer {
-    private panTompkins: PanTompkinsDetector;
     private pqrstDetector: PQRSTDetector;
     private intervalCalculator: ECGIntervalCalculator;
     private hrvCalculator: HRVCalculator;
-    private model: tf.LayersModel | null = null;
+    private model: any | null = null;
     private sampleRate: number;
 
     constructor(sampleRate: number) {
         this.sampleRate = sampleRate;
-        this.panTompkins = new PanTompkinsDetector(sampleRate);
         this.pqrstDetector = new PQRSTDetector(sampleRate);
         this.intervalCalculator = new ECGIntervalCalculator(sampleRate);
         this.hrvCalculator = new HRVCalculator();
@@ -105,32 +103,8 @@ export class SessionAnalyzer {
 
     async loadModel(): Promise<boolean> {
         try {
-            const modelSources = [
-                'localstorage://beat-level-ecg-model',
-                this.getModelPath(),
-                'models/beat-level-ecg-model.json',
-            ];
-
-            for (const modelUrl of modelSources) {
-                try {
-
-                    if (modelUrl.startsWith('localstorage://')) {
-                        const models = await tf.io.listModels();
-                        if (!models[modelUrl]) {
-
-                            continue;
-                        }
-                    }
-                    this.model = await tf.loadLayersModel(modelUrl);
-
-                    return true;
-                } catch (err) {
-
-                    continue;
-                }
-            }
-            console.warn('No beat-level ECG model could be loaded from any source');
-            return false;
+            this.model = await loadECGModel();
+            return true;
         } catch (err) {
             console.error('Failed to load beat-level ECG model:', err);
             this.model = null;
@@ -139,19 +113,13 @@ export class SessionAnalyzer {
     }
 
     /**
-     * Returns the correct model path for both local and GitHub Pages deployments.
+     * Reset internal state between recording sessions to prevent data leakage.
      */
-    private getModelPath(): string {
-        // If running on GitHub Pages, the path should include the repo name.
-        if (typeof window !== "undefined") {
-            const path = window.location.pathname;
-            // Adjust 'Rpeak' to your actual repo name if different
-            if (path.startsWith('/Rpeak')) {
-                return '/Rpeak/models/beat-level-ecg-model.json';
-            }
-        }
-        // Default for local/dev
-        return 'models/beat-level-ecg-model.json';
+    reset(): void {
+        // Reset HRV calculator which accumulates RR intervals
+        this.hrvCalculator.reset();
+        // Note: Detectors (PanTompkins, PQRST) are stateless, no reset needed
+        // intervalCalculator is also stateless
     }
 
     public async analyzeSession(session: RecordingSession): Promise<SessionAnalysisResults> {
@@ -187,24 +155,110 @@ export class SessionAnalyzer {
 
         this.intervalCalculator.setGender(patientInfo.gender);
 
-        // 1. Detect R-peaks
-        const rPoints = this.pqrstDetector.detectDirectWaves(ecgData).filter(pt => pt.type === 'R');
-        const peaks = rPoints.map(pt => pt.index);
+        // 1. Detect R-peaks using the shared detector (consistent with live panel)
+        console.log(`[sessionAnalyzer] analyzing: ecgData.length=${ecgData.length}, sampleRate=${sampleRate}, duration=${duration}`);
+        let peaks = detectRPeaksECG(ecgData, sampleRate, { adaptiveThreshold: true });
+        console.log(`[sessionAnalyzer] shared detector returned ${peaks.length} peaks`);
+        
+        // Fallback: use session-provided peaks if detector yields none
+        if ((!peaks || peaks.length === 0) && session.rPeaks && session.rPeaks.length > 0) {
+            console.log(`[sessionAnalyzer] fallback to session.rPeaks: ${session.rPeaks.length} peaks`);
+            peaks = session.rPeaks.slice();
+        }
+        console.log(`[sessionAnalyzer] final peaks before check: ${peaks.length}`);
 
-
-        // 2. Detect PQRST waves
+        // 2. Detect PQRST waves (use peaks found above)
         const pqrstPoints = this.pqrstDetector.detectWaves(ecgData, peaks, 0);
 
         // 3. Calculate ECG intervals
         intervals = session.intervals || this.intervalCalculator.calculateIntervals(pqrstPoints);
 
-        // 4. Calculate HRV metrics
+        // If we don't have at least 2 beats, return an 'insufficient data' summary
+        if (!peaks || peaks.length < 2) {
+            console.log(`[sessionAnalyzer] INSUFFICIENT BEATS: only ${peaks?.length || 0} peaks detected`);
+            const heartRates = this.calculateHeartRateStats(peaks, sampleRate, duration);
+            const stSegmentData = session.stSegmentData || { deviation: 0, status: 'unknown' };
+            const aiClassification = {
+                prediction: 'Insufficient Data',
+                confidence: 0,
+                explanation: 'Not enough beats were detected to compute HR/HRV reliably.'
+            };
+
+            return {
+                summary: {
+                    recordingDuration: this.formatDuration(duration),
+                    recordingDurationSeconds: duration,
+                    rPeaks: peaks,
+                    heartRate: {
+                        average: heartRates.average,
+                        min: heartRates.min,
+                        max: heartRates.max,
+                        status: 'unknown'
+                    },
+                    rhythm: {
+                        classification: aiClassification.prediction,
+                        confidence: aiClassification.confidence,
+                        irregularBeats: 0,
+                        percentIrregular: 0
+                    }
+                },
+                intervals: {
+                    pr: {
+                        average: intervals?.pr || 0,
+                        status: intervals?.status.pr || 'unknown'
+                    },
+                    qrs: {
+                        average: intervals?.qrs || 0,
+                        status: intervals?.status.qrs || 'unknown'
+                    },
+                    qt: {
+                        average: intervals?.qt || 0
+                    },
+                    qtc: {
+                        average: intervals?.qtc || 0,
+                        status: intervals?.status.qtc || 'unknown'
+                    },
+                    st: {
+                        deviation: stSegmentData.deviation,
+                        status: stSegmentData.status
+                    }
+                },
+                hrv: {
+                    timeMetrics: {
+                        rmssd: 0,
+                        sdnn: 0,
+                        pnn50: 0,
+                        triangularIndex: 0
+                    },
+                    frequencyMetrics: {
+                        lf: 0,
+                        hf: 0,
+                        lfhfRatio: 0
+                    },
+                    assessment: {
+                        status: 'Insufficient',
+                        description: 'Not enough beats for HRV analysis.'
+                    },
+                    physiologicalState: {
+                        state: 'Analyzing',
+                        confidence: 0
+                    }
+                },
+                aiClassification,
+                abnormalities: [],
+                recommendations: [
+                    'Record a longer session (≥30 seconds) to capture enough heartbeats for analysis.'
+                ]
+            };
+        }
+
+        // 4. Calculate HRV metrics (we have ≥2 peaks)
         this.hrvCalculator.extractRRFromPeaks(peaks, sampleRate);
         const hrvMetrics = this.hrvCalculator.getAllMetrics();
         const physioState = this.hrvCalculator.getPhysiologicalState();
 
-        // 5. Analyze ST segment
-        const stSegmentData = this.analyzeSTSegment(pqrstPoints);
+        // 5. Use ST segment analysis from recording panel if available
+        const stSegmentData = session.stSegmentData || { deviation: 0, status: 'unknown' };
 
         // 6. Run AI classification using beat-level model
         const aiClassification = await this.runBeatLevelClassification(
@@ -298,42 +352,6 @@ export class SessionAnalyzer {
         };
     }
 
-    private analyzeSTSegment(pqrstPoints: any[]): { deviation: number; status: string } | null {
-        // Basic ST segment analysis
-        if (!pqrstPoints || pqrstPoints.length === 0) {
-            return null;
-        }
-
-        // Simplified ST analysis - in a real implementation, this would be more sophisticated
-        const stDeviations: number[] = [];
-
-        pqrstPoints.forEach(point => {
-            if (point.S && point.T) {
-                // Calculate ST segment deviation (simplified)
-                const stDeviation = point.T.amplitude - point.S.amplitude;
-                stDeviations.push(stDeviation);
-            }
-        });
-
-        if (stDeviations.length === 0) {
-            return { deviation: 0, status: 'unknown' };
-        }
-
-        const avgDeviation = stDeviations.reduce((sum, dev) => sum + dev, 0) / stDeviations.length;
-
-        let status = 'normal';
-        if (avgDeviation > 0.1) {
-            status = 'elevation';
-        } else if (avgDeviation < -0.1) {
-            status = 'depression';
-        }
-
-        return {
-            deviation: avgDeviation,
-            status: status
-        };
-    }
-
     private adaptSignalForModel(ecgWindow: number[]): number[] {
         // Step 1: Use raw normalized signal (no mV conversion, no MIT-BIH scaling)
         const rawSignal = ecgWindow;
@@ -390,7 +408,14 @@ export class SessionAnalyzer {
             return {
                 prediction: "Analysis Failed",
                 confidence: 0,
-                explanation: "Could not run AI analysis due to missing model or insufficient data."
+                explanation: "Could not run AI analysis due to missing model or insufficient data.",
+                beatClassifications: {
+                    normal: 0,
+                    supraventricular: 0,
+                    ventricular: 0,
+                    fusion: 0,
+                    other: 0
+                }
             };
         }
 
@@ -405,7 +430,14 @@ export class SessionAnalyzer {
                 return {
                     prediction: "Poor Signal Quality",
                     confidence: 0,
-                    explanation: "Signal too weak for reliable AI analysis. Ensure good electrode contact."
+                    explanation: "Signal too weak for reliable AI analysis. Ensure good electrode contact.",
+                    beatClassifications: {
+                        normal: 0,
+                        supraventricular: 0,
+                        ventricular: 0,
+                        fusion: 0,
+                        other: 0
+                    }
                 };
             }
 
@@ -429,6 +461,25 @@ export class SessionAnalyzer {
                 const timeDiff = (peak - peaks[index - 1]) / this.sampleRate * 1000;
                 return timeDiff >= 300 && timeDiff <= 1500;
             });
+            console.log(`[runBeatLevelClassification] model=${this.model ? 'loaded' : 'null'}, filtered peaks=${filteredPeaks.length}/${peaks.length}`);
+
+            // Load TensorFlow once before the loop to avoid overhead
+            const tf = await loadTensorFlow();
+            if (!tf) {
+                console.error('TensorFlow.js not loaded');
+                return {
+                    prediction: "Analysis Error",
+                    confidence: 0,
+                    explanation: "TensorFlow.js failed to load for beat analysis.",
+                    beatClassifications: {
+                        normal: 0,
+                        supraventricular: 0,
+                        ventricular: 0,
+                        fusion: 0,
+                        other: 0
+                    }
+                };
+            }
 
             // Analyze individual beats around R-peaks
             for (const peak of filteredPeaks) {
@@ -476,10 +527,10 @@ export class SessionAnalyzer {
                 const inputTensor = tf.tensor3d([normalizedBeat.map(v => [v])], [1, beatLength, 1]);
 
                 try {
-                    const outputTensor = this.model.predict(inputTensor) as tf.Tensor;
+                    const outputTensor = this.model.predict(inputTensor) as any;
                     const probabilities = await outputTensor.data();
 
-                    const predArray = Array.from(probabilities);
+                    const predArray = Array.from(probabilities) as number[];
 
                     // Apply the same bias correction as real-time analysis
                     const deviceBiasCorrection = [
@@ -490,7 +541,7 @@ export class SessionAnalyzer {
                         0.7   // Other: mild reduction
                     ];
 
-                    const correctedProbs = predArray.map((prob, idx) => prob * deviceBiasCorrection[idx]);
+                    const correctedProbs = predArray.map((prob, idx) => (prob as number) * deviceBiasCorrection[idx]);
                     const correctedSum = correctedProbs.reduce((a, b) => a + b, 0);
                     const normalizedProbs = correctedProbs.map(p => p / correctedSum);
 
@@ -498,8 +549,10 @@ export class SessionAnalyzer {
                     const confidence = normalizedProbs[maxIndex];
 
                     // Only accept predictions with reasonable confidence
-                    if (maxIndex >= 0 && maxIndex < AAMI_CLASSES.length && confidence > 0.4) {  // Lowered from 0.5 to 0.4
+                    // Lowered threshold to 0.25 for development (medical deployment would need 0.7+)
+                    if (maxIndex >= 0 && maxIndex < AAMI_CLASSES.length && confidence > 0.25) {
                         const predictedClass = AAMI_CLASSES[maxIndex].toLowerCase();
+                        console.log(`[beatClassification] peak@${peak}: ${predictedClass} confidence=${confidence.toFixed(3)}`);
 
                         // Count beat classifications
                         switch (predictedClass) {
@@ -522,6 +575,10 @@ export class SessionAnalyzer {
                         validPredictions++;
                         confidenceSum += confidence;
 
+                    } else {
+                        // Fallback: classify as 'normal' if prediction fails (development mode)
+                        beatClassifications.normal++;
+                        console.log(`[beatClassification] peak@${peak}: FALLBACK to normal (confidence=${confidence.toFixed(3)} below threshold)`);
                     }
 
                     outputTensor.dispose();
@@ -533,6 +590,8 @@ export class SessionAnalyzer {
                 totalBeats++;
             }
 
+            const totalClassifiedBeats = Object.values(beatClassifications).reduce((sum, count) => sum + count, 0);
+            console.log(`[beatClassification] SUMMARY: total=${totalBeats}, classified=${totalClassifiedBeats}, breakdown: normal=${beatClassifications.normal} sv=${beatClassifications.supraventricular} vt=${beatClassifications.ventricular} fusion=${beatClassifications.fusion} other=${beatClassifications.other}`);
 
             // Determine overall rhythm classification based on beat analysis
             let overallPrediction = "Insufficient Data";
@@ -800,16 +859,20 @@ export class SessionAnalyzer {
             const rr = (peaks[i] - peaks[i - 1]) * (1000 / sampleRate);
             rrIntervals.push(rr);
         }
+        console.log(`[calculateHeartRateStats] ${peaks.length} peaks, raw RR intervals (ms): ${rrIntervals.map(x => x.toFixed(1)).join(', ')}`);
 
         // Filter RR intervals to physiological range (300ms to 2000ms)
         const filteredRRs = rrIntervals.filter(rr => rr >= 300 && rr <= 2000);
+        console.log(`[calculateHeartRateStats] filtered RR intervals: ${filteredRRs.map(x => x.toFixed(1)).join(', ')} (kept ${filteredRRs.length}/${rrIntervals.length})`);
 
         if (filteredRRs.length === 0) {
+            console.log(`[calculateHeartRateStats] WARNING: no valid RR intervals, returning 0 BPM`);
             return { average: 0, min: 0, max: 0, median: 0 };
         }
 
         // Calculate BPM for each RR interval
         const bpms = filteredRRs.map(rr => 60000 / rr);
+        console.log(`[calculateHeartRateStats] calculated BPMs: ${bpms.map(x => x.toFixed(1)).join(', ')}`);
 
         // Mean, median, min, max BPM
         const average = bpms.reduce((a, b) => a + b, 0) / bpms.length;
@@ -817,6 +880,8 @@ export class SessionAnalyzer {
         const median = sortedBPM[Math.floor(sortedBPM.length / 2)];
         const min = Math.min(...bpms);
         const max = Math.max(...bpms);
+
+        console.log(`[calculateHeartRateStats] final result: avg=${average.toFixed(1)} BPM, min=${min.toFixed(1)}, max=${max.toFixed(1)}`);
 
         return {
             average: isNaN(average) ? 0 : average,

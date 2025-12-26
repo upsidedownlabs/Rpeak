@@ -75,19 +75,19 @@ export class ECGIntervalCalculator {
     // Calculate PR interval
     const pPoint = this.findPointByType(latestComplex, 'P');
     const qPoint = this.findPointByType(latestComplex, 'Q');
-    const prInterval = (pPoint && qPoint) ? 
-      ((qPoint.index - pPoint.index) / this.sampleRate) * 1000 : 0;
+    const prDiff = (pPoint && qPoint) ? (qPoint.absolutePosition - pPoint.absolutePosition) : 0;
+    const prInterval = prDiff > 0 ? (prDiff / this.sampleRate) * 1000 : 0;
     
     // Calculate QRS duration
     const qPoint2 = this.findPointByType(latestComplex, 'Q');
     const sPoint = this.findPointByType(latestComplex, 'S');
-    const qrsDuration = (qPoint2 && sPoint) ? 
-      ((sPoint.index - qPoint2.index) / this.sampleRate) * 1000 : 0;
+    const qrsDiff = (qPoint2 && sPoint) ? (sPoint.absolutePosition - qPoint2.absolutePosition) : 0;
+    const qrsDuration = qrsDiff > 0 ? (qrsDiff / this.sampleRate) * 1000 : 0;
     
     // Calculate QT interval
     const tPoint = this.findPointByType(latestComplex, 'T');
-    const qtInterval = (qPoint2 && tPoint) ? 
-      ((tPoint.index - qPoint2.index) / this.sampleRate) * 1000 : 0;
+    const qtDiff = (qPoint2 && tPoint) ? (tPoint.absolutePosition - qPoint2.absolutePosition) : 0;
+    const qtInterval = qtDiff > 0 ? (qtDiff / this.sampleRate) * 1000 : 0;
     
     // If RR interval isn't available, try to get it from BPM
     if (rrInterval < 100 && bpm > 0) {

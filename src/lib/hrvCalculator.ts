@@ -118,13 +118,18 @@ export class HRVCalculator {
     
     // Low frequency component (approximate)
     const slowChanges = differences.filter((_, i) => i % 4 === 0); // ~0.04-0.15 Hz approx
-    const lf = slowChanges.reduce((sum, val) => sum + Math.abs(val), 0) / slowChanges.length;
+    const lf = slowChanges.length > 0 
+      ? slowChanges.reduce((sum, val) => sum + Math.abs(val), 0) / slowChanges.length 
+      : 0;
     
     // High frequency component (approximate)
     const fastChanges = differences.filter((_, i) => i % 2 === 0); // ~0.15-0.4 Hz approx
-    const hf = fastChanges.reduce((sum, val) => sum + Math.abs(val), 0) / fastChanges.length;
+    const hf = fastChanges.length > 0 
+      ? fastChanges.reduce((sum, val) => sum + Math.abs(val), 0) / fastChanges.length 
+      : 0;
     
-    const ratio = hf > 0 ? lf / hf : 0;
+    // Protect against division by zero and ensure valid ratio
+    const ratio = (hf > 0 && Number.isFinite(lf) && Number.isFinite(hf)) ? lf / hf : 0;
     
     return { lf, hf, ratio };
   }
@@ -212,7 +217,7 @@ export class HRVCalculator {
     const meanRR = this.rrIntervals.length > 0
       ? this.rrIntervals.reduce((sum, rr) => sum + rr, 0) / this.rrIntervals.length
       : 0;
-    const BPM = meanRR > 0 ? 60 / (meanRR / 1000) : 0; // Convert mean RR to BPM
+    const BPM = meanRR > 0 ? 60000 / meanRR : 0; // Convert mean RR (ms) to BPM - FIXED
     
     let state = "Neutral";
     let confidence = 0.6; // Default confidence
@@ -220,16 +225,16 @@ export class HRVCalculator {
     // Mental state detection algorithm
     if (RMSSD < 25 && SDNN < 50 && BPM > 90) {
       state = "High Stress";
-      confidence = 0.7 + (90 - RMSSD) / 100;
+      confidence = Math.min(0.95, Math.max(0.1, 0.7 + (90 - RMSSD) / 100));
     } else if (RMSSD > 40 && pNN50 > 30 && LF_HF < 1.5) {
       state = "Relaxed";
-      confidence = 0.7 + (RMSSD - 40) / 100;
+      confidence = Math.min(0.95, Math.max(0.1, 0.7 + (RMSSD - 40) / 100));
     } else if (pNN50 < 10 && LF_HF > 2.0) {
       state = "Focused";
-      confidence = 0.7 + (LF_HF - 2.0) / 3;
+      confidence = Math.min(0.95, Math.max(0.1, 0.7 + (LF_HF - 2.0) / 3));
     } else if (SDNN < 30 && entropy < 0.6) {
       state = "Fatigue";
-      confidence = 0.7 + (0.6 - entropy) / 0.5;
+      confidence = Math.min(0.95, Math.max(0.1, 0.7 + (0.6 - entropy) / 0.5));
     } else {
       state = "Neutral";
       // Calculate confidence based on how close we are to any threshold
@@ -253,11 +258,12 @@ export class HRVCalculator {
       );
       
       // Higher confidence when we're clearly in the neutral state
-      confidence = 0.6 + Math.min(stressDistance, relaxedDistance, focusedDistance, fatigueDistance) * 0.4;
+      const minDistance = Math.min(stressDistance, relaxedDistance, focusedDistance, fatigueDistance);
+      confidence = Math.min(0.95, Math.max(0.1, 0.6 + minDistance * 0.4));
     }
     
-    // Cap confidence at 0.95
-    confidence = Math.min(0.95, confidence);
+    // Ensure confidence is always within valid bounds [0.1, 0.95]
+    confidence = Math.min(0.95, Math.max(0.1, confidence));
     
     return { state, confidence };
   }
@@ -281,7 +287,7 @@ export class HRVCalculator {
     const meanRR = this.rrIntervals.length > 0
       ? this.rrIntervals.reduce((sum, rr) => sum + rr, 0) / this.rrIntervals.length
       : 0;
-    const BPM = meanRR > 0 ? 60 / (meanRR / 1000) : 0; // Convert mean RR to BPM
+    const BPM = meanRR > 0 ? 60000 / meanRR : 0; // Convert mean RR (ms) to BPM - FIXED
     
     let state = "Neutral";
     let confidence = 0.6; // Default confidence
@@ -289,16 +295,16 @@ export class HRVCalculator {
     // Physiological state detection algorithm
     if (RMSSD < 25 && SDNN < 50 && BPM > 90) {
       state = "High Stress";
-      confidence = 0.7 + (90 - RMSSD) / 100;
+      confidence = Math.min(0.95, Math.max(0.1, 0.7 + (90 - RMSSD) / 100));
     } else if (RMSSD > 40 && pNN50 > 30 && LF_HF < 1.5) {
       state = "Relaxed";
-      confidence = 0.7 + (RMSSD - 40) / 100;
+      confidence = Math.min(0.95, Math.max(0.1, 0.7 + (RMSSD - 40) / 100));
     } else if (pNN50 < 10 && LF_HF > 2.0) {
       state = "Focused";
-      confidence = 0.7 + (LF_HF - 2.0) / 3;
+      confidence = Math.min(0.95, Math.max(0.1, 0.7 + (LF_HF - 2.0) / 3));
     } else if (SDNN < 30 && entropy < 0.6) {
       state = "Fatigue";
-      confidence = 0.7 + (0.6 - entropy) / 0.5;
+      confidence = Math.min(0.95, Math.max(0.1, 0.7 + (0.6 - entropy) / 0.5));
     } else {
       state = "Neutral";
       // Calculate confidence based on how close we are to any threshold
@@ -322,11 +328,12 @@ export class HRVCalculator {
       );
       
       // Higher confidence when we're clearly in the neutral state
-      confidence = 0.6 + Math.min(stressDistance, relaxedDistance, focusedDistance, fatigueDistance) * 0.4;
+      const minDistance = Math.min(stressDistance, relaxedDistance, focusedDistance, fatigueDistance);
+      confidence = Math.min(0.95, Math.max(0.1, 0.6 + minDistance * 0.4));
     }
     
-    // Cap confidence at 0.95
-    confidence = Math.min(0.95, confidence);
+    // Ensure confidence is always within valid bounds [0.1, 0.95]
+    confidence = Math.min(0.95, Math.max(0.1, confidence));
     
     return { state, confidence };
   }
@@ -347,7 +354,9 @@ export class HRVCalculator {
     const spectralResults = this.welchPeriodogram(filteredRR);
     const lfPower = spectralResults.lfPower;
     const hfPower = spectralResults.hfPower;
-    const lfhfRatio = lfPower / hfPower;
+    const lfhfRatio = (hfPower > 0 && Number.isFinite(lfPower) && Number.isFinite(hfPower)) 
+      ? lfPower / hfPower 
+      : 0;
     
     return {
       rmssd,
