@@ -10,14 +10,11 @@
   },
   "dependencies": {
     "@tensorflow/tfjs": "^4.22.0",
-    "js-yaml": "^4.1.1",
-    "jspdf": "^3.0.1",
     "lucide-react": "^0.525.0",
     "next": "^16.0.10",
     "papaparse": "^5.5.3",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
-    "react-tooltip": "^5.29.1",
     "webgl-plot": "^0.7.2"
   },
   "devDependencies": {
@@ -31,7 +28,6 @@
     "eslint-config-next": "^16.0.10",
     "lightningcss": "^1.30.1",
     "tailwindcss": "^4",
-    "typescript": "^5",
-    "worker-loader": "^3.0.8"
+    "typescript": "^5"
   }
 }
